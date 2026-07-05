@@ -174,7 +174,7 @@ def test_internal_tang_is_distinct_and_crosses_blade_grip_boundary():
     assert "module tang_core()" in scad
     assert "tang_width_mm" in scad and "tang_thickness_mm" in scad
     assert "tang_length_mm = grip_length_mm" not in scad
-    assert "tang_bottom_y = grip_start_y - tang_pommel_overlap_mm;" in scad
+    assert "tang_bottom_y = tang_top_y - tang_length_mm;" in scad
     assert "tang_top_y = blade_start_y + tang_blade_overlap_mm;" in scad
     assert "translate([0, tang_center_y, 0]) tang_core();" in scad
 
@@ -244,6 +244,57 @@ def test_geometry_audit_reports_normal_contacts_and_orientation():
 
 def test_ring_guard_is_removed_from_available_options():
     assert "ring" not in GUARD_STYLES
+
+
+def test_custom_tang_dimensions_are_distinct_from_external_grip():
+    metrics = preset_metrics("longsword")
+    metrics.update(tang_length_mm=180, tang_width_mm=12, tang_thickness_mm=4)
+    scad = generate_scad("longsword", metrics, "tapered", "straight", "wheel")
+    assert "tang_length_mm = 180;" in scad
+    assert "tang_width_mm = 12;" in scad
+    assert "tang_thickness_mm = 4;" in scad
+    assert "grip_length_mm = 230;" in scad and "grip_width_mm = 29;" in scad
+
+
+def test_peg_holes_are_optional_and_cut_through_tang():
+    metrics = preset_metrics("longsword")
+    metrics.update(peg_hole_count=2, peg_hole_diameter_mm=5, peg_hole_spacing_mm=40)
+    with_holes = generate_scad("longsword", metrics, "tapered", "straight", "wheel")
+    metrics["peg_hole_count"] = 0
+    without_holes = generate_scad("longsword", metrics, "tapered", "straight", "wheel")
+    assert "peg_hole_count = 2;" in with_holes
+    assert "cylinder(h=tang_thickness_mm+2, d=peg_hole_diameter_mm" in with_holes
+    assert "peg_hole_count = 0;" in without_holes
+    assert "cylinder(h=tang_thickness_mm+2, d=peg_hole_diameter_mm" not in without_holes
+
+
+def test_peg_holes_and_count_are_clamped_to_prop_safe_tang_bounds():
+    metrics = preset_metrics("dagger")
+    metrics.update(peg_hole_count=9, peg_hole_diameter_mm=100, peg_hole_spacing_mm=1000)
+    scad = generate_scad("dagger", metrics, "tapered", "straight", "sphere")
+    assert "peg_hole_count = 3;" in scad
+    audit = audit_geometry(metrics, "dagger", "tapered", "straight", "sphere")
+    assert any("between 0 and 3" in warning for warning in audit["warnings"])
+    assert any("Peg holes fit" in message for message in audit["passes"])
+
+
+def test_visible_tang_with_hidden_grip_keeps_peg_holes():
+    metrics = preset_metrics("longsword")
+    metrics["peg_hole_count"] = 2
+    scad = generate_scad(
+        "longsword", metrics, "tapered", "straight", "wheel",
+        visible_components={"grip": False, "tang": True},
+    )
+    calls = _assembly_calls(scad)
+    assert "tang_core();" in calls and "grip();" not in calls
+    assert "peg_hole_count = 2;" in scad and "module tang_core()" in scad
+
+
+def test_straight_guard_uses_rounded_capsule_helper():
+    scad = generate_scad("longsword", preset_metrics("longsword"), "tapered", "straight", "wheel")
+    assert "module rounded_guard_bar" in scad
+    assert "hull()" in scad
+    assert "rounded_guard_bar(guard_width_mm, guard_height_mm);" in scad
 
 
 def test_disk_guard_uses_y_axis_and_shared_contact_anchor():

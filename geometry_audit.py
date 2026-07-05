@@ -9,6 +9,7 @@ from scad_generator import (
     disk_guard_diameter,
     guard_should_rotate_90,
     normalize_component_visibility,
+    resolve_tang_details,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 
@@ -93,6 +94,36 @@ def audit_geometry(
     guard_width = dimensions["guard_width_mm"]
     guard_height = dimensions["guard_height_mm"]
     pommel_size = dimensions["pommel_size_mm"]
+
+    if visible["tang"]:
+        tang = resolve_tang_details(metrics)
+        requested_count = int(_number(metrics, "peg_hole_count"))
+        if not 0 <= requested_count <= 3:
+            warnings.append("Peg hole count must be between 0 and 3.")
+        requested_length = _number(metrics, "tang_length_mm") if "tang_length_mm" in metrics else tang["tang_length_mm"]
+        requested_width = _number(metrics, "tang_width_mm") if "tang_width_mm" in metrics else tang["tang_width_mm"]
+        requested_thickness = (_number(metrics, "tang_thickness_mm")
+                               if "tang_thickness_mm" in metrics else tang["tang_thickness_mm"])
+        if requested_length >= grip or requested_width >= dimensions["grip_width_mm"]:
+            warnings.append("Tang dimensions must remain smaller than the external grip dimensions.")
+        else:
+            passed.append("Tang length and width remain smaller than the external grip.")
+        if requested_thickness >= tang["grip_depth_mm"]:
+            warnings.append("Tang thickness must remain smaller than the external grip depth.")
+        else:
+            passed.append("Tang thickness remains inside the external oval grip depth.")
+        if tang["peg_hole_count"]:
+            requested_diameter = (_number(metrics, "peg_hole_diameter_mm")
+                                  if "peg_hole_diameter_mm" in metrics else tang["peg_hole_diameter_mm"])
+            if requested_diameter > tang["peg_hole_diameter_mm"]:
+                warnings.append("Peg hole diameter is too large for the tang and will be clamped.")
+            last_center = (tang["peg_hole_offset_from_guard_mm"] +
+                           (tang["peg_hole_count"] - 1) * tang["peg_hole_spacing_mm"])
+            radius = tang["peg_hole_diameter_mm"] / 2
+            if radius >= tang["tang_width_mm"] / 2 or last_center + radius > tang["tang_length_mm"]:
+                warnings.append("Peg holes do not fit inside the tang bounds.")
+            else:
+                passed.append("Peg holes fit within the tang width and length bounds.")
 
     if visible["grip"] and grip >= MIN_GRIP_LENGTH_MM:
         passed.append(f"Grip length meets the {MIN_GRIP_LENGTH_MM:g} mm minimum.")

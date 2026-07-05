@@ -56,6 +56,52 @@ def get_guard_rotation(sword_type: str, blade_style: str) -> int:
     return 90 if guard_should_rotate_90(sword_type, blade_style) else 0
 
 
+def resolve_tang_details(metrics: dict[str, float]) -> dict[str, float]:
+    """Return bounded, prop-scale tang and peg-hole dimensions."""
+    grip_length = max(1.0, float(metrics.get("grip_length_mm", 1.0)))
+    grip_width = max(1.0, float(metrics.get("grip_width_mm", 1.0)))
+    blade_width = max(1.0, float(metrics.get("blade_base_width_mm", 1.0)))
+    blade_thickness = max(1.0, float(metrics.get("blade_thickness_mm", 1.0)))
+    grip_depth = max(blade_thickness * 1.8, grip_width * 0.68)
+
+    default_length = grip_length * 0.9
+    default_width = min(blade_width * 0.55, grip_width * 0.52)
+    default_thickness = min(max(2.4, blade_thickness * 0.72), grip_depth * 0.55)
+    tang_length = clamp(float(metrics.get("tang_length_mm", default_length)), 1.0, grip_length * 0.98)
+    tang_width = clamp(float(metrics.get("tang_width_mm", default_width)), 1.0, grip_width * 0.9)
+    tang_thickness = clamp(
+        float(metrics.get("tang_thickness_mm", default_thickness)), 1.0, grip_depth * 0.9
+    )
+
+    count = int(clamp(int(metrics.get("peg_hole_count", 0)), 0, 3))
+    max_diameter = max(0.0, min(tang_width * 0.55, tang_length / (count + 1) * 0.6))
+    diameter = clamp(float(metrics.get("peg_hole_diameter_mm", 4.0)), 0.0, max_diameter)
+    edge_margin = max(diameter, 2.0)
+    usable_length = max(0.0, tang_length - 2 * edge_margin)
+    default_spacing = usable_length / max(1, count - 1) if count > 1 else 0.0
+    spacing = clamp(
+        float(metrics.get("peg_hole_spacing_mm", default_spacing)),
+        diameter,
+        usable_length / max(1, count - 1) if count > 1 else 0.0,
+    ) if count > 1 else 0.0
+    default_offset = max(edge_margin, (tang_length - spacing * max(0, count - 1)) / 2)
+    offset = clamp(
+        float(metrics.get("peg_hole_offset_from_guard_mm", default_offset)),
+        edge_margin,
+        max(edge_margin, tang_length - edge_margin - spacing * max(0, count - 1)),
+    )
+    return {
+        "grip_depth_mm": grip_depth,
+        "tang_length_mm": tang_length,
+        "tang_width_mm": tang_width,
+        "tang_thickness_mm": tang_thickness,
+        "peg_hole_count": count,
+        "peg_hole_diameter_mm": diameter,
+        "peg_hole_spacing_mm": spacing,
+        "peg_hole_offset_from_guard_mm": offset,
+    }
+
+
 def _blade_polygon(style: str) -> str:
     profiles = {
         "tapered": """[[-blade_base_width_mm/2, ricasso_length_mm],
@@ -101,10 +147,8 @@ def _blade_polygon(style: str) -> str:
 
 def _guard_geometry(style: str) -> str:
     guards = {
-        "straight": """// Straight guard: centered across X.
-        cube([guard_width_mm, guard_height_mm, guard_height_mm], center=true);
-        for (side=[-1, 1]) translate([side*guard_width_mm/2, 0, 0])
-            sphere(d=guard_height_mm*1.35);""",
+        "straight": """// Straight guard: softened capsule bar centered across X.
+        rounded_guard_bar(guard_width_mm, guard_height_mm);""",
         "crescent": """// Pronounced crescent stays inside the guard's Y contact envelope.
         difference() {
             scale([1.18, guard_height_mm/guard_width_mm, 1])
@@ -210,7 +254,14 @@ module blade() {{
 
 def make_guard(guard_style: str) -> str:
     """Return guard geometry centered on the local origin."""
-    return f"""module guard() {{
+    return f"""module rounded_guard_bar(width, diameter) {{
+    hull() {{
+        for (side=[-1, 1]) translate([side*(width-diameter)/2, 0, 0])
+            sphere(d=diameter);
+    }}
+}}
+
+module guard() {{
     color("gainsboro") union() {{ {_guard_geometry(guard_style)} }}
 }}
 """
@@ -227,12 +278,23 @@ def make_grip() -> str:
 """
 
 
-def make_tang() -> str:
+def make_tang(peg_hole_count: int = 0) -> str:
     """Return the decorative internal core joining blade, guard, and grip."""
+    if peg_hole_count <= 0:
+        return """module tang_core() {
+    // Non-functional prop core; the external oval grip encloses this geometry.
+    color("dimgray") cube([tang_width_mm, tang_length_mm, tang_thickness_mm], center=true);
+}
+"""
     return """module tang_core() {
     // Non-functional prop core; the external oval grip encloses this geometry.
-    color("dimgray")
+    color("dimgray") difference() {
         cube([tang_width_mm, tang_length_mm, tang_thickness_mm], center=true);
+        for (peg_index=[0:peg_hole_count-1])
+            translate([0, tang_length_mm/2-peg_hole_offset_from_guard_mm-
+                peg_index*peg_hole_spacing_mm, 0])
+                cylinder(h=tang_thickness_mm+2, d=peg_hole_diameter_mm, center=true);
+    }
 }
 """
 
@@ -326,24 +388,30 @@ def generate_scad(
     grip_length = max(1.0, float(values.get("grip_length_mm", 1.0)))
     guard_height = max(1.0, float(values.get("guard_height_mm", 1.0)))
     ricasso_length = max(0.0, float(values.get("ricasso_length_mm", 0.0)))
-    grip_depth = max(blade_thickness * 1.8, grip_width * 0.68)
-    tang_width = min(blade_width * 0.55, grip_width * 0.52)
-    tang_thickness = min(max(2.4, blade_thickness * 0.72), grip_depth * 0.55)
+    tang = resolve_tang_details(values)
     tang_blade_overlap = max(3.0, min(ricasso_length, blade_width * 0.5))
-    tang_pommel_overlap = min(2.0, grip_length * 0.02)
-    tang_length = grip_length + guard_height + tang_blade_overlap + tang_pommel_overlap
-    assignments = "\n".join(f"{name} = {value:g};" for name, value in values.items())
+    tang_length = tang["tang_length_mm"]
+    detail_names = {
+        "tang_length_mm", "tang_width_mm", "tang_thickness_mm", "peg_hole_count",
+        "peg_hole_diameter_mm", "peg_hole_spacing_mm", "peg_hole_offset_from_guard_mm",
+    }
+    assignments = "\n".join(
+        f"{name} = {value:g};" for name, value in values.items() if name not in detail_names
+    )
     assignments += (
         f"\nfuller_length_ratio = {fuller_length_ratio:g};"
         f"\nfuller_width_mm = {fuller_width_mm:g};"
         f"\ndisk_guard_diameter_mm = {disk_guard_diameter(values):g};"
         f"\n// External grip dimensions remain independent from the internal prop core."
-        f"\ngrip_depth_mm = {grip_depth:g};"
-        f"\ntang_width_mm = {tang_width:g};"
-        f"\ntang_thickness_mm = {tang_thickness:g};"
+        f"\ngrip_depth_mm = {tang['grip_depth_mm']:g};"
+        f"\ntang_width_mm = {tang['tang_width_mm']:g};"
+        f"\ntang_thickness_mm = {tang['tang_thickness_mm']:g};"
         f"\ntang_blade_overlap_mm = {tang_blade_overlap:g};"
-        f"\ntang_pommel_overlap_mm = {tang_pommel_overlap:g};"
         f"\ntang_length_mm = {tang_length:g};"
+        f"\npeg_hole_count = {tang['peg_hole_count']:g};"
+        f"\npeg_hole_diameter_mm = {tang['peg_hole_diameter_mm']:g};"
+        f"\npeg_hole_spacing_mm = {tang['peg_hole_spacing_mm']:g};"
+        f"\npeg_hole_offset_from_guard_mm = {tang['peg_hole_offset_from_guard_mm']:g};"
         f"\nmin_prop_tip_width_mm = 3;"
         f"\nmin_prop_blade_thickness_mm = 2.4;"
         f"\nprop_tip_width_mm = max(blade_tip_width_mm, min_prop_tip_width_mm);"
@@ -355,7 +423,7 @@ def generate_scad(
     visible_names = ", ".join(name for name in COMPONENT_NAMES if visible[name]) or "none"
     modules = {
         "blade": make_blade(blade_style, fuller_enabled, ridge_enabled),
-        "tang": make_tang(),
+        "tang": make_tang(tang["peg_hole_count"]),
         "guard": make_guard(guard_style),
         "grip": make_grip(),
         "pommel": make_pommel(pommel_style),
@@ -385,8 +453,8 @@ guard_y = guard_center_y;
 guard_top_y = guard_bottom_y + guard_height_mm;
 blade_start_y = guard_top_y;
 blade_tip_y = blade_start_y + blade_length_mm;
-tang_bottom_y = grip_start_y - tang_pommel_overlap_mm;
 tang_top_y = blade_start_y + tang_blade_overlap_mm;
+tang_bottom_y = tang_top_y - tang_length_mm;
 tang_center_y = (tang_bottom_y + tang_top_y)/2;
 pommel_overlap_mm = min(2, pommel_size_mm/4);
 pommel_center_y = grip_start_y - pommel_size_mm/2 + pommel_overlap_mm;

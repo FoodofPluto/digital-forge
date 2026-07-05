@@ -81,6 +81,43 @@ for index, name in enumerate(REQUIRED_METRICS):
             help=f"Typical range: {spec['min']:g}-{spec['max']:g} mm",
         )
 
+st.subheader("Tang and peg details")
+tang_col1, tang_col2, tang_col3 = st.columns(3)
+grip_length = metrics["grip_length_mm"]
+grip_width = metrics["grip_width_mm"]
+grip_depth = max(metrics["blade_thickness_mm"] * 1.8, grip_width * 0.68)
+with tang_col1:
+    metrics["tang_length_mm"] = st.number_input(
+        "Tang length (mm)", 1.0, float(grip_length * 0.98), float(grip_length * 0.9), 1.0,
+        key=f"{sword_type}_tang_length_mm",
+        help="Internal prop core length; kept shorter than the external grip."
+    )
+    metrics["tang_width_mm"] = st.number_input(
+        "Tang width (mm)", 1.0, float(grip_width * 0.9), float(grip_width * 0.5), 0.5,
+        key=f"{sword_type}_tang_width_mm"
+    )
+with tang_col2:
+    metrics["tang_thickness_mm"] = st.number_input(
+        "Tang thickness (mm)", 1.0, float(grip_depth * 0.9),
+        float(min(max(2.4, metrics["blade_thickness_mm"] * 0.72), grip_depth * 0.55)), 0.2,
+        key=f"{sword_type}_tang_thickness_mm"
+    )
+    metrics["peg_hole_count"] = st.selectbox(
+        "Peg hole count", (0, 1, 2, 3), key=f"{sword_type}_peg_hole_count"
+    )
+with tang_col3:
+    metrics["peg_hole_diameter_mm"] = st.number_input(
+        "Peg hole diameter (mm)", 1.0, float(max(1.0, grip_width * 0.25)), 4.0, 0.5,
+        key=f"{sword_type}_peg_hole_diameter_mm"
+    )
+    metrics["peg_hole_spacing_mm"] = st.number_input(
+        "Peg hole spacing (mm)", 1.0, float(max(1.0, grip_length)),
+        float(max(8.0, grip_length * 0.22)), 1.0, disabled=metrics["peg_hole_count"] < 2,
+        key=f"{sword_type}_peg_hole_spacing_mm",
+        help="Center-to-center spacing; generation clamps holes inside the tang."
+    )
+metrics["peg_hole_offset_from_guard_mm"] = max(6.0, grip_length * 0.12)
+
 st.subheader("Blade details")
 detail_col1, detail_col2, detail_col3 = st.columns(3)
 with detail_col1:
