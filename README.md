@@ -16,6 +16,9 @@ Run the app:
 streamlit run app.py
 ```
 
+Use Streamlit's page navigation to open the **Preset Gallery**, which contains seven named,
+ready-to-download configurations generated through the same OpenSCAD generator as the designer.
+
 Run the tests:
 
 ```powershell
