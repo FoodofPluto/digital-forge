@@ -12,6 +12,7 @@ from scad_generator import (
     GUARD_STYLES,
     POMMEL_STYLES,
     VISIBILITY_PRESETS,
+    blade_detail_offset_for_position,
     generate_scad,
     has_visible_components,
 )
@@ -131,6 +132,22 @@ with detail_col3:
     fuller_width_mm = st.number_input(
         "Fuller width (mm)", min_value=1.0, value=12.0, step=1.0, disabled=not fuller_enabled
     )
+position_col1, position_col2 = st.columns(2)
+position_options = ("Center", "Slight left", "Slight right")
+with position_col1:
+    fuller_position = st.selectbox(
+        "Fuller position", position_options, disabled=not fuller_enabled
+    )
+with position_col2:
+    ridge_position = st.selectbox(
+        "Ridge position", position_options, disabled=not ridge_enabled
+    )
+fuller_offset_x = blade_detail_offset_for_position(
+    fuller_position, metrics["blade_base_width_mm"]
+)
+ridge_offset_x = blade_detail_offset_for_position(
+    ridge_position, metrics["blade_base_width_mm"]
+)
 
 st.subheader("Design notes")
 st.info(get_design_notes(sword_type, blade_style, guard_style, pommel_style))
@@ -145,7 +162,9 @@ else:
 
 st.subheader("Geometry audit")
 audit = audit_geometry(
-    metrics, sword_type, blade_style, guard_style, pommel_style, visible_components
+    metrics, sword_type, blade_style, guard_style, pommel_style, visible_components,
+    fuller_enabled, fuller_length_ratio, ridge_enabled,
+    fuller_offset_x, ridge_offset_x, fuller_width_mm,
 )
 audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
 with audit_warning_col:
@@ -179,6 +198,8 @@ scad = generate_scad(
     ridge_enabled,
     debug_geometry,
     visible_components,
+    fuller_offset_x,
+    ridge_offset_x,
 )
 st.subheader("Generated OpenSCAD")
 st.code(scad, language="openscad")

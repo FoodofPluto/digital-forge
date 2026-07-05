@@ -10,10 +10,15 @@ from scad_generator import (
     BLADE_STYLES,
     GUARD_STYLES,
     VISIBILITY_PRESETS,
+    blade_detail_bounds,
+    blade_detail_offset_for_position,
+    clamp_blade_detail_offset,
+    centered_peg_hole_positions,
     disk_guard_diameter,
     generate_scad,
     get_guard_rotation,
     has_visible_components,
+    resolve_tang_details,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from showcase_presets import SHOWCASE_PRESETS, generate_showcase_scad, preset_metrics as showcase_metrics
@@ -288,6 +293,138 @@ def test_visible_tang_with_hidden_grip_keeps_peg_holes():
     calls = _assembly_calls(scad)
     assert "tang_core();" in calls and "grip();" not in calls
     assert "peg_hole_count = 2;" in scad and "module tang_core()" in scad
+
+
+def test_single_peg_hole_is_centered_in_usable_tang():
+    positions = centered_peg_hole_positions(180, 1, 5, 28)
+    assert positions == [(28 + 5 + 180 - 5) / 2]
+
+
+def test_two_and_three_peg_holes_are_distributed_around_usable_center():
+    for count in (2, 3):
+        positions = centered_peg_hole_positions(180, count, 5, 28, 36)
+        assert len(positions) == count
+        assert (positions[0] + positions[-1]) / 2 == (33 + 175) / 2
+        assert positions == sorted(positions)
+        assert positions[0] > 28
+
+
+def test_peg_holes_respect_both_tang_margins_after_clamping():
+    metrics = preset_metrics("dagger")
+    metrics.update(peg_hole_count=3, peg_hole_diameter_mm=100, peg_hole_spacing_mm=1000)
+    tang = resolve_tang_details(metrics)
+    assert tang["peg_hole_positions_mm"][0] >= tang["peg_hole_usable_start_mm"]
+    assert tang["peg_hole_positions_mm"][-1] <= tang["peg_hole_usable_end_mm"]
+
+
+def test_tang_only_and_blade_tang_views_keep_peg_holes():
+    metrics = preset_metrics("longsword")
+    metrics["peg_hole_count"] = 2
+    for preset in ("Tang only", "Blade + tang only"):
+        scad = generate_scad(
+            "longsword", metrics, "tapered", "straight", "wheel",
+            visible_components=VISIBILITY_PRESETS[preset],
+        )
+        assert "module tang_core()" in scad
+        assert "cylinder(h=tang_thickness_mm+2, d=peg_hole_diameter_mm" in scad
+
+
+def test_fuller_and_ridge_use_bounded_blade_local_geometry():
+    metrics = preset_metrics("longsword")
+    start, end = blade_detail_bounds(
+        metrics["blade_length_mm"], metrics["ricasso_length_mm"], 0.7, "tapered"
+    )
+    scad = generate_scad(
+        "longsword", metrics, "tapered", "straight", "wheel",
+        fuller_enabled=True, fuller_length_ratio=0.7, ridge_enabled=True,
+    )
+    assert start >= metrics["ricasso_length_mm"] and end < metrics["blade_length_mm"]
+    assert f"blade_detail_start_y = {start:g};" in scad
+    assert f"blade_detail_end_y = {end:g};" in scad
+    assert "intersection()" in scad
+    assert "prop_blade_thickness_mm/2-0.15" in scad
+
+
+def test_blade_details_follow_blade_visibility_and_audit_bounds():
+    metrics = preset_metrics("longsword")
+    hidden = generate_scad(
+        "longsword", metrics, "leaf", "straight", "wheel",
+        fuller_enabled=True, ridge_enabled=True,
+        visible_components=VISIBILITY_PRESETS["Tang only"],
+    )
+    assert "module fuller_geometry()" not in hidden
+    assert "module ridge_geometry()" not in hidden
+    audit = audit_geometry(
+        metrics, "longsword", "leaf", "straight", "wheel",
+        VISIBILITY_PRESETS["Blade only"], True, 0.85, True,
+    )
+    combined = " ".join(audit["passes"])
+    assert "Fuller stays within" in combined and "Central ridge stays within" in combined
+
+
+def test_symmetrical_blade_details_default_to_centered_offsets():
+    metrics = preset_metrics("longsword")
+    for style in ("tapered", "leaf", "needle"):
+        scad = generate_scad(
+            "longsword", metrics, style, "straight", "wheel",
+            fuller_enabled=True, ridge_enabled=True,
+        )
+        assert "fuller_offset_x = 0;" in scad
+        assert "ridge_offset_x = 0;" in scad
+
+
+def test_asymmetrical_blades_accept_left_and_right_detail_offsets():
+    for style in ("falchion", "curved"):
+        metrics = preset_metrics("falchion" if style == "falchion" else "longsword")
+        left = blade_detail_offset_for_position("Slight left", metrics["blade_base_width_mm"])
+        right = blade_detail_offset_for_position("Slight right", metrics["blade_base_width_mm"])
+        scad = generate_scad(
+            "longsword", metrics, style, "straight", "wheel",
+            fuller_enabled=True, ridge_enabled=True,
+            fuller_offset_x=left, ridge_offset_x=right,
+        )
+        assert f"fuller_offset_x = {left:g};" in scad
+        assert f"ridge_offset_x = {right:g};" in scad
+        assert "translate([fuller_offset_x, 0, 0])" in scad
+        assert "translate([ridge_offset_x, 0])" in scad
+
+
+def test_excessive_blade_detail_offsets_are_clamped_and_audited():
+    metrics = preset_metrics("longsword")
+    width = metrics["blade_base_width_mm"]
+    expected_fuller = clamp_blade_detail_offset(width, 1000, 12)
+    expected_ridge = clamp_blade_detail_offset(width, -1000, width * 0.14)
+    scad = generate_scad(
+        "longsword", metrics, "tapered", "straight", "wheel",
+        fuller_enabled=True, ridge_enabled=True,
+        fuller_offset_x=1000, ridge_offset_x=-1000,
+    )
+    assert f"fuller_offset_x = {expected_fuller:g};" in scad
+    assert f"ridge_offset_x = {expected_ridge:g};" in scad
+    audit = audit_geometry(
+        metrics, "longsword", "tapered", "straight", "wheel", None,
+        True, 0.65, True, 1000, -1000, 12,
+    )
+    assert sum("offset exceeds safe blade bounds" in item for item in audit["warnings"]) == 2
+
+
+def test_detail_offsets_respect_component_visibility():
+    metrics = preset_metrics("longsword")
+    offset = blade_detail_offset_for_position("Slight right", metrics["blade_base_width_mm"])
+    visible = generate_scad(
+        "longsword", metrics, "curved", "straight", "wheel",
+        fuller_enabled=True, ridge_enabled=True,
+        visible_components=VISIBILITY_PRESETS["Blade only"],
+        fuller_offset_x=offset, ridge_offset_x=-offset,
+    )
+    hidden = generate_scad(
+        "longsword", metrics, "curved", "straight", "wheel",
+        fuller_enabled=True, ridge_enabled=True,
+        visible_components=VISIBILITY_PRESETS["Tang only"],
+        fuller_offset_x=offset, ridge_offset_x=-offset,
+    )
+    assert "module fuller_geometry()" in visible and "module ridge_geometry()" in visible
+    assert "module fuller_geometry()" not in hidden and "module ridge_geometry()" not in hidden
 
 
 def test_straight_guard_uses_rounded_capsule_helper():

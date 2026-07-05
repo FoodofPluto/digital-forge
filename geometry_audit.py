@@ -6,6 +6,8 @@ from scad_generator import (
     BLADE_STYLES,
     GUARD_STYLES,
     POMMEL_STYLES,
+    blade_detail_bounds,
+    clamp_blade_detail_offset,
     disk_guard_diameter,
     guard_should_rotate_90,
     normalize_component_visibility,
@@ -40,6 +42,12 @@ def audit_geometry(
     guard_style: str,
     pommel_style: str,
     visible_components: dict[str, bool] | None = None,
+    fuller_enabled: bool = False,
+    fuller_length_ratio: float = 0.65,
+    ridge_enabled: bool = False,
+    fuller_offset_x: float = 0.0,
+    ridge_offset_x: float = 0.0,
+    fuller_width_mm: float = 12.0,
 ) -> dict[str, list[str]]:
     """Return warning, informational, and passing geometry audit messages."""
     warnings: list[str] = []
@@ -117,13 +125,55 @@ def audit_geometry(
                                   if "peg_hole_diameter_mm" in metrics else tang["peg_hole_diameter_mm"])
             if requested_diameter > tang["peg_hole_diameter_mm"]:
                 warnings.append("Peg hole diameter is too large for the tang and will be clamped.")
-            last_center = (tang["peg_hole_offset_from_guard_mm"] +
-                           (tang["peg_hole_count"] - 1) * tang["peg_hole_spacing_mm"])
+            positions = tang["peg_hole_positions_mm"]
+            last_center = positions[-1]
             radius = tang["peg_hole_diameter_mm"] / 2
-            if radius >= tang["tang_width_mm"] / 2 or last_center + radius > tang["tang_length_mm"]:
+            if (radius >= tang["tang_width_mm"] / 2 or
+                    positions[0] < tang["peg_hole_usable_start_mm"] or
+                    last_center > tang["peg_hole_usable_end_mm"]):
                 warnings.append("Peg holes do not fit inside the tang bounds.")
             else:
                 passed.append("Peg holes fit within the tang width and length bounds.")
+            usable_center = (tang["peg_hole_usable_start_mm"] + tang["peg_hole_usable_end_mm"]) / 2
+            group_center = (positions[0] + positions[-1]) / 2
+            if abs(group_center - usable_center) > 0.5:
+                warnings.append("Peg holes are not centered in the tang's usable handle region.")
+            elif positions[0] <= tang["peg_hole_usable_start_mm"] + 0.5:
+                warnings.append("Peg holes are too close to the blade-side end of the usable tang.")
+            else:
+                passed.append("Peg holes are centered in the tang's usable handle region.")
+
+    if visible["blade"] and (fuller_enabled or ridge_enabled) and blade > 0:
+        detail_start, detail_end = blade_detail_bounds(
+            blade, dimensions["ricasso_length_mm"], fuller_length_ratio, blade_style
+        )
+        if detail_start < max(0.0, dimensions["ricasso_length_mm"]) or detail_end > blade:
+            warnings.append("Blade detail geometry exceeds the blade body bounds.")
+        else:
+            if fuller_enabled:
+                passed.append("Fuller stays within the blade body and clear of the guard and tip.")
+            if ridge_enabled:
+                passed.append("Central ridge stays within the blade body and clear of the guard and tip.")
+        if fuller_enabled:
+            safe_fuller_offset = clamp_blade_detail_offset(
+                blade_width, fuller_offset_x, min(fuller_width_mm, blade_width * 0.55),
+            )
+            if safe_fuller_offset != fuller_offset_x:
+                warnings.append("Fuller X offset exceeds safe blade bounds and will be clamped.")
+            else:
+                passed.append("Fuller X offset stays within safe blade bounds.")
+        if ridge_enabled:
+            safe_ridge_offset = clamp_blade_detail_offset(
+                blade_width, ridge_offset_x, blade_width * 0.14
+            )
+            if safe_ridge_offset != ridge_offset_x:
+                warnings.append("Central ridge X offset exceeds safe blade bounds and will be clamped.")
+            else:
+                passed.append("Central ridge X offset stays within safe blade bounds.")
+        if blade_style in {"tapered", "leaf", "needle"} and fuller_offset_x == ridge_offset_x == 0:
+            passed.append("Symmetrical blade details use centered default placement.")
+        elif blade_style in {"falchion", "curved"}:
+            passed.append("Asymmetrical blade style supports conservative side-offset details.")
 
     if visible["grip"] and grip >= MIN_GRIP_LENGTH_MM:
         passed.append(f"Grip length meets the {MIN_GRIP_LENGTH_MM:g} mm minimum.")

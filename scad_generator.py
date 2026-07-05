@@ -56,6 +56,65 @@ def get_guard_rotation(sword_type: str, blade_style: str) -> int:
     return 90 if guard_should_rotate_90(sword_type, blade_style) else 0
 
 
+def centered_peg_hole_positions(
+    tang_length_mm: float,
+    peg_hole_count: int,
+    peg_hole_diameter_mm: float,
+    blade_side_exclusion_mm: float = 0.0,
+    requested_spacing_mm: float | None = None,
+) -> list[float]:
+    """Return hole-center offsets from the tang top, centered in its usable handle region."""
+    count = max(0, min(int(peg_hole_count), 3))
+    if count == 0:
+        return []
+    margin = max(float(peg_hole_diameter_mm), 2.0)
+    usable_start = min(float(tang_length_mm), max(0.0, blade_side_exclusion_mm) + margin)
+    usable_end = max(usable_start, float(tang_length_mm) - margin)
+    center = (usable_start + usable_end) / 2
+    if count == 1:
+        return [center]
+    max_spacing = max(0.0, (usable_end - usable_start) / (count - 1))
+    default_spacing = max_spacing * 0.72
+    spacing = clamp(
+        default_spacing if requested_spacing_mm is None else float(requested_spacing_mm),
+        min(float(peg_hole_diameter_mm), max_spacing),
+        max_spacing,
+    )
+    group_start = center - spacing * (count - 1) / 2
+    return [group_start + index * spacing for index in range(count)]
+
+
+def blade_detail_bounds(
+    blade_length_mm: float, ricasso_length_mm: float, length_ratio: float, blade_style: str
+) -> tuple[float, float]:
+    """Return conservative blade-local Y bounds for attached decorative details."""
+    blade_length = max(1.0, float(blade_length_mm))
+    ricasso = clamp(float(ricasso_length_mm), 0.0, blade_length * 0.8)
+    body_length = max(1.0, blade_length - ricasso)
+    start = min(blade_length, ricasso + max(2.0, body_length * 0.04))
+    ratio_cap = 0.48 if blade_style in {"curved", "falchion"} else 0.85
+    ratio = clamp(float(length_ratio), 0.15, ratio_cap)
+    tip_margin = max(3.0, body_length * 0.08)
+    end = min(blade_length - tip_margin, start + body_length * ratio)
+    return start, max(start, end)
+
+
+def blade_detail_offset_for_position(position: str, blade_width_mm: float) -> float:
+    """Map the compact UI position labels to conservative X offsets."""
+    offsets = {"Center": 0.0, "Slight left": -0.08, "Slight right": 0.08}
+    return float(blade_width_mm) * offsets.get(position, 0.0)
+
+
+def clamp_blade_detail_offset(
+    blade_width_mm: float, requested_offset_x: float, feature_width_mm: float
+) -> float:
+    """Keep a detail near the blade center with room for its own half-width."""
+    blade_width = max(1.0, float(blade_width_mm))
+    feature_half_width = max(0.0, float(feature_width_mm)) / 2
+    max_offset = max(0.0, blade_width * 0.22 - feature_half_width)
+    return clamp(float(requested_offset_x), -max_offset, max_offset)
+
+
 def resolve_tang_details(metrics: dict[str, float]) -> dict[str, float]:
     """Return bounded, prop-scale tang and peg-hole dimensions."""
     grip_length = max(1.0, float(metrics.get("grip_length_mm", 1.0)))
@@ -74,22 +133,19 @@ def resolve_tang_details(metrics: dict[str, float]) -> dict[str, float]:
     )
 
     count = int(clamp(int(metrics.get("peg_hole_count", 0)), 0, 3))
-    max_diameter = max(0.0, min(tang_width * 0.55, tang_length / (count + 1) * 0.6))
+    guard_height = max(0.0, float(metrics.get("guard_height_mm", 0.0)))
+    ricasso_length = max(0.0, float(metrics.get("ricasso_length_mm", 0.0)))
+    tang_blade_overlap = max(3.0, min(ricasso_length, blade_width * 0.5))
+    blade_side_exclusion = min(tang_length * 0.45, guard_height + tang_blade_overlap)
+    preliminary_usable = max(0.0, tang_length - blade_side_exclusion - 4.0)
+    max_diameter = max(0.0, min(tang_width * 0.55, preliminary_usable / max(1, count) * 0.6))
     diameter = clamp(float(metrics.get("peg_hole_diameter_mm", 4.0)), 0.0, max_diameter)
-    edge_margin = max(diameter, 2.0)
-    usable_length = max(0.0, tang_length - 2 * edge_margin)
-    default_spacing = usable_length / max(1, count - 1) if count > 1 else 0.0
-    spacing = clamp(
-        float(metrics.get("peg_hole_spacing_mm", default_spacing)),
-        diameter,
-        usable_length / max(1, count - 1) if count > 1 else 0.0,
-    ) if count > 1 else 0.0
-    default_offset = max(edge_margin, (tang_length - spacing * max(0, count - 1)) / 2)
-    offset = clamp(
-        float(metrics.get("peg_hole_offset_from_guard_mm", default_offset)),
-        edge_margin,
-        max(edge_margin, tang_length - edge_margin - spacing * max(0, count - 1)),
+    positions = centered_peg_hole_positions(
+        tang_length, count, diameter, blade_side_exclusion,
+        metrics.get("peg_hole_spacing_mm") if "peg_hole_spacing_mm" in metrics else None,
     )
+    spacing = positions[1] - positions[0] if len(positions) > 1 else 0.0
+    offset = positions[0] if positions else 0.0
     return {
         "grip_depth_mm": grip_depth,
         "tang_length_mm": tang_length,
@@ -99,6 +155,9 @@ def resolve_tang_details(metrics: dict[str, float]) -> dict[str, float]:
         "peg_hole_diameter_mm": diameter,
         "peg_hole_spacing_mm": spacing,
         "peg_hole_offset_from_guard_mm": offset,
+        "peg_hole_positions_mm": positions,
+        "peg_hole_usable_start_mm": blade_side_exclusion + max(diameter, 2.0),
+        "peg_hole_usable_end_mm": tang_length - max(diameter, 2.0),
     }
 
 
@@ -201,12 +260,18 @@ def make_blade(blade_style: str, fuller_enabled: bool, ridge_enabled: bool) -> s
     if fuller_enabled:
         fuller = """
 module fuller_geometry() {
-    channel_length = max(1, (blade_length_mm-ricasso_length_mm)*fuller_length_ratio);
-    channel_depth = max(0.4, blade_thickness_mm*0.18);
-    channel_start = ricasso_length_mm + (blade_length_mm-ricasso_length_mm)*0.04;
-    for (face=[-1, 1]) translate([0, channel_start+channel_length/2,
-        face*(blade_thickness_mm/2-channel_depth/2)])
-        cube([fuller_width_mm, channel_length, channel_depth], center=true);
+    channel_length = blade_detail_end_y-blade_detail_start_y;
+    channel_depth = max(0.4, prop_blade_thickness_mm*0.18);
+    for (face=[-1, 1]) translate([0, blade_detail_start_y+channel_length/2,
+        face*(prop_blade_thickness_mm/2-channel_depth/2)])
+        intersection() {
+            translate([fuller_offset_x, 0, 0])
+                cube([min(fuller_width_mm, blade_base_width_mm*0.55), channel_length,
+                    channel_depth], center=true);
+            translate([0, -(blade_detail_start_y+blade_detail_end_y)/2, 0])
+                linear_extrude(height=prop_blade_thickness_mm*2, center=true)
+                    blade_profile_2d();
+        }
 }
 """
         fuller_call = "fuller_geometry();"
@@ -216,11 +281,16 @@ module fuller_geometry() {
     if ridge_enabled:
         ridge = """
 module ridge_geometry() {
-    translate([0, 0, blade_thickness_mm/2])
-        linear_extrude(height=max(0.6, blade_thickness_mm*0.16))
-            polygon([[-blade_base_width_mm*0.07, ricasso_length_mm],
-                     [0, blade_length_mm*0.92],
-                     [blade_base_width_mm*0.07, ricasso_length_mm]]);
+    ridge_height = max(0.6, prop_blade_thickness_mm*0.16);
+    translate([0, 0, prop_blade_thickness_mm/2-0.15])
+        linear_extrude(height=ridge_height+0.15)
+            intersection() {
+                blade_profile_2d();
+                translate([ridge_offset_x, 0])
+                    polygon([[-blade_base_width_mm*0.07, blade_detail_start_y],
+                             [0, blade_detail_end_y],
+                             [blade_base_width_mm*0.07, blade_detail_start_y]]);
+            }
 }
 """
         ridge_call = "ridge_geometry();"
@@ -378,6 +448,8 @@ def generate_scad(
     ridge_enabled: bool = False,
     debug_geometry: bool = False,
     visible_components: dict[str, bool] | None = None,
+    fuller_offset_x: float = 0.0,
+    ridge_offset_x: float = 0.0,
 ) -> str:
     """Build a complete decorative OpenSCAD program from dimensions and styles."""
     values = dict(metrics)
@@ -388,6 +460,16 @@ def generate_scad(
     grip_length = max(1.0, float(values.get("grip_length_mm", 1.0)))
     guard_height = max(1.0, float(values.get("guard_height_mm", 1.0)))
     ricasso_length = max(0.0, float(values.get("ricasso_length_mm", 0.0)))
+    blade_length = max(1.0, float(values.get("blade_length_mm", 1.0)))
+    detail_start, detail_end = blade_detail_bounds(
+        blade_length, ricasso_length, fuller_length_ratio, blade_style
+    )
+    resolved_fuller_offset = clamp_blade_detail_offset(
+        blade_width, fuller_offset_x, min(float(fuller_width_mm), blade_width * 0.55)
+    )
+    resolved_ridge_offset = clamp_blade_detail_offset(
+        blade_width, ridge_offset_x, blade_width * 0.14
+    )
     tang = resolve_tang_details(values)
     tang_blade_overlap = max(3.0, min(ricasso_length, blade_width * 0.5))
     tang_length = tang["tang_length_mm"]
@@ -401,6 +483,11 @@ def generate_scad(
     assignments += (
         f"\nfuller_length_ratio = {fuller_length_ratio:g};"
         f"\nfuller_width_mm = {fuller_width_mm:g};"
+        f"\nfuller_offset_x = {resolved_fuller_offset:g};"
+        f"\nridge_offset_x = {resolved_ridge_offset:g};"
+        f"\n// Blade-local detail bounds exclude the guard/ricasso and blunt tip."
+        f"\nblade_detail_start_y = {detail_start:g};"
+        f"\nblade_detail_end_y = {detail_end:g};"
         f"\ndisk_guard_diameter_mm = {disk_guard_diameter(values):g};"
         f"\n// External grip dimensions remain independent from the internal prop core."
         f"\ngrip_depth_mm = {tang['grip_depth_mm']:g};"
