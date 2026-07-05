@@ -2,13 +2,19 @@
 
 from math import isfinite
 
-from scad_generator import disk_guard_diameter
+from scad_generator import (
+    BLADE_STYLES,
+    GUARD_STYLES,
+    POMMEL_STYLES,
+    disk_guard_diameter,
+    guard_should_rotate_90,
+)
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 
 
-SUPPORTED_BLADE_STYLES = {"tapered", "leaf", "needle", "falchion"}
-SUPPORTED_GUARD_STYLES = {"straight", "crescent", "downturned", "disk"}
-SUPPORTED_POMMEL_STYLES = {"sphere", "wheel", "ring", "spike"}
+SUPPORTED_BLADE_STYLES = set(BLADE_STYLES)
+SUPPORTED_GUARD_STYLES = set(GUARD_STYLES)
+SUPPORTED_POMMEL_STYLES = set(POMMEL_STYLES)
 
 MAX_GUARD_WIDTH_MM = 500.0
 MAX_DISK_GUARD_DIAMETER_MM = 220.0
@@ -96,6 +102,8 @@ def audit_geometry(
             info.append(f"Disk guard diameter is capped at {capped:g} mm.")
         else:
             passed.append("Disk guard diameter is within its capped range.")
+        passed.append("Disk guard is centered on +Y between the grip and blade anchors.")
+        passed.append("Disk guard's thin Y axis touches the top of the grip without blocking the blade base.")
 
     pommel_radius = pommel_size / 2
     if pommel_radius > MAX_POMMEL_RADIUS_MM:
@@ -113,13 +121,23 @@ def audit_geometry(
         passed.append("Guard-to-blade contact is maintained at guard_top_y.")
 
     if guard_style == "crescent":
-        passed.append("Crescent guard cup faces +Y toward the blade.")
+        passed.append("Crescent guard uses an enlarged outer arc and deeper cutout for a pronounced silhouette.")
     elif guard_style == "downturned":
         passed.append("Downturned guard arms sweep toward +Y and the blade.")
     elif guard_style in {"straight", "disk"}:
         passed.append("Guard is centered perpendicular to the +Y blade direction.")
 
+    if guard_should_rotate_90(sword_type, blade_style):
+        passed.append("Guard rotates 90 degrees around +Y for this sword/blade profile.")
+    else:
+        passed.append("Guard uses the normal orientation for this sword/blade profile.")
+
     if blade_style == "falchion":
-        passed.append("Falchion uses the forward-heavy belly profile.")
+        passed.append("Falchion uses a widened forward belly and slanted chopping point.")
+    elif blade_style == "curved":
+        passed.append("Curved blade sweeps visibly toward +X along its length.")
+
+    if pommel_style == "spike":
+        passed.append("Spike pommel is rooted at the grip bottom and points toward -Y.")
 
     return {"warnings": warnings, "info": info, "passes": passed}

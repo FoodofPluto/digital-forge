@@ -6,7 +6,7 @@ from design_notes import get_design_notes
 from geometry_audit import audit_geometry
 from preview_service import export_with_openscad
 from realism_rules import check_realism
-from scad_generator import generate_scad
+from scad_generator import BLADE_STYLES, GUARD_STYLES, POMMEL_STYLES, generate_scad
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 
 st.set_page_config(page_title="Digital Forge", page_icon="DF", layout="wide")
@@ -24,11 +24,11 @@ preset = SWORD_PRESETS[sword_type]
 
 style_col1, style_col2, style_col3 = st.columns(3)
 with style_col1:
-    blade_style = st.selectbox("Blade style", ["tapered", "leaf", "needle", "falchion"])
+    blade_style = st.selectbox("Blade style", BLADE_STYLES)
 with style_col2:
-    guard_style = st.selectbox("Guard style", ["straight", "crescent", "downturned", "disk"])
+    guard_style = st.selectbox("Guard style", GUARD_STYLES)
 with style_col3:
-    pommel_style = st.selectbox("Pommel style", ["sphere", "wheel", "ring", "spike"])
+    pommel_style = st.selectbox("Pommel style", POMMEL_STYLES)
 
 st.subheader("Dimensions")
 metric_columns = st.columns(3)

@@ -1,5 +1,9 @@
 """Generate decorative OpenSCAD swords using one shared coordinate contract."""
 
+BLADE_STYLES = ("tapered", "leaf", "needle", "curved", "falchion")
+GUARD_STYLES = ("straight", "crescent", "downturned", "disk")
+POMMEL_STYLES = ("sphere", "wheel", "ring", "spike")
+
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     """Return value constrained to the inclusive range."""
@@ -13,6 +17,16 @@ def disk_guard_diameter(metrics: dict[str, float]) -> float:
     if blade_width <= 0:
         return 0.0
     return clamp(requested, blade_width * 1.5, blade_width * 3.25)
+
+
+def guard_should_rotate_90(sword_type: str, blade_style: str) -> bool:
+    """Return whether the guard should turn around the sword's main axis."""
+    return sword_type.lower() == "falchion" or blade_style.lower() in {"falchion", "curved"}
+
+
+def get_guard_rotation(sword_type: str, blade_style: str) -> int:
+    """Return the guard rotation around the +Y sword axis in degrees."""
+    return 90 if guard_should_rotate_90(sword_type, blade_style) else 0
 
 
 def _blade_polygon(style: str) -> str:
@@ -30,17 +44,26 @@ def _blade_polygon(style: str) -> str:
         [-blade_tip_width_mm, blade_length_mm*0.72], [0, blade_length_mm],
         [blade_tip_width_mm, blade_length_mm*0.72],
         [blade_base_width_mm/2, ricasso_length_mm]]""",
+        # Both edges sweep toward +X, producing an obvious sabre-like curve.
+        "curved": """[[-blade_base_width_mm*0.50, ricasso_length_mm],
+        [-blade_base_width_mm*0.38, blade_length_mm*0.30],
+        [-blade_base_width_mm*0.12, blade_length_mm*0.62],
+        [blade_base_width_mm*0.38, blade_length_mm*0.88],
+        [blade_base_width_mm*0.72, blade_length_mm],
+        [blade_base_width_mm*0.80, blade_length_mm*0.84],
+        [blade_base_width_mm*0.62, blade_length_mm*0.55],
+        [blade_base_width_mm*0.50, ricasso_length_mm]]""",
         # Decorative forward-heavy falchion with an expanded belly and clipped point.
-        "falchion": """[[-blade_base_width_mm*0.38, ricasso_length_mm],
-        [-blade_base_width_mm*0.40, blade_length_mm*0.28],
-        [-blade_base_width_mm*0.48, blade_length_mm*0.55],
-        [-blade_base_width_mm*0.62, blade_length_mm*0.76],
-        [-blade_base_width_mm*0.58, blade_length_mm*0.90],
-        [-blade_tip_width_mm*0.35, blade_length_mm],
-        [blade_base_width_mm*0.30, blade_length_mm*0.94],
-        [blade_base_width_mm*0.53, blade_length_mm*0.78],
-        [blade_base_width_mm*0.47, blade_length_mm*0.50],
-        [blade_base_width_mm*0.38, ricasso_length_mm]]""",
+        "falchion": """[[-blade_base_width_mm*0.42, ricasso_length_mm],
+        [-blade_base_width_mm*0.44, blade_length_mm*0.38],
+        [-blade_base_width_mm*0.58, blade_length_mm*0.66],
+        [-blade_base_width_mm*0.78, blade_length_mm*0.84],
+        [-blade_base_width_mm*0.70, blade_length_mm*0.96],
+        [-blade_base_width_mm*0.22, blade_length_mm],
+        [blade_base_width_mm*0.58, blade_length_mm*0.88],
+        [blade_base_width_mm*0.68, blade_length_mm*0.72],
+        [blade_base_width_mm*0.52, blade_length_mm*0.40],
+        [blade_base_width_mm*0.42, ricasso_length_mm]]""",
     }
     if style not in profiles:
         raise ValueError(f"Unknown blade style: {style}")
@@ -53,21 +76,27 @@ def _guard_geometry(style: str) -> str:
         cube([guard_width_mm, guard_height_mm, guard_height_mm], center=true);
         for (side=[-1, 1]) translate([side*guard_width_mm/2, 0, 0])
             sphere(d=guard_height_mm*1.35);""",
-        "crescent": """// Crescent guard orientation: cup faces +Y toward blade.
+        "crescent": """// Pronounced crescent stays inside the guard's Y contact envelope.
         difference() {
-            cylinder(h=guard_height_mm, r=guard_width_mm/2, center=true);
-            translate([0, guard_width_mm*0.18, 0])
-                cylinder(h=guard_height_mm*2, r=guard_width_mm*0.43, center=true);
-        }""",
+            scale([1.18, guard_height_mm/guard_width_mm, 1])
+                cylinder(h=guard_height_mm, d=guard_width_mm, center=true);
+            translate([0, guard_height_mm*0.42, 0])
+                scale([0.68, guard_height_mm/guard_width_mm, 1])
+                    cylinder(h=guard_height_mm*2, d=guard_width_mm*1.08, center=true);
+        }
+        cube([grip_width_mm*1.3, guard_height_mm, guard_height_mm], center=true);""",
         "downturned": """// Downturned guard arms sweep toward +Y and the blade.
         for (side=[-1, 1])
             translate([side*guard_width_mm/4, guard_width_mm*0.10, 0])
                 rotate([0, 0, side*24])
                     cube([guard_width_mm/2, guard_height_mm, guard_height_mm], center=true);
         sphere(d=guard_height_mm*1.45);""",
-        "disk": """// Disk guard: diameter is capped by Python before emission.
-        cylinder(h=guard_height_mm, d=disk_guard_diameter_mm, center=true);
-        cylinder(h=guard_height_mm*1.35, d=grip_width_mm*1.45, center=true);""",
+        "disk": """// Disk guard: diameter is capped by Python; thin axis follows +Y.
+        // It is centered between the grip and blade.
+        rotate([90, 0, 0])
+            cylinder(h=guard_height_mm, d=disk_guard_diameter_mm, center=true);
+        rotate([90, 0, 0])
+            cylinder(h=guard_height_mm*1.05, d=grip_width_mm*1.45, center=true);""",
     }
     if style not in guards:
         raise ValueError(f"Unknown guard style: {style}")
@@ -82,9 +111,10 @@ def _pommel_geometry(style: str) -> str:
             cylinder(h=pommel_size_mm*0.34, d=pommel_size_mm, center=true);
             cylinder(h=pommel_size_mm, d=pommel_size_mm*0.52, center=true);
         }""",
-        "spike": """rotate([90, 0, 0])
+        "spike": """// Local Y=0 is the attachment face; point extends toward -Y.
+        rotate([90, 0, 0])
             cylinder(h=pommel_size_mm, r1=pommel_size_mm*0.42, r2=0);
-        sphere(d=pommel_size_mm*0.48);""",
+        translate([0, -pommel_size_mm*0.24, 0]) sphere(d=pommel_size_mm*0.48);""",
     }
     if style not in pommels:
         raise ValueError(f"Unknown pommel style: {style}")
@@ -166,7 +196,7 @@ def make_grip() -> str:
 
 
 def make_pommel(pommel_style: str) -> str:
-    """Return pommel geometry centered on the local origin."""
+    """Return pommel geometry; spike is rooted at its top, others are centered."""
     return f"""module pommel() {{
     color("silver") union() {{ {_pommel_geometry(pommel_style)} }}
 }}
@@ -208,14 +238,14 @@ module debug_markers() {{
 """
 
 
-def assemble_sword(debug_geometry: bool = False) -> str:
+def assemble_sword(guard_rotation: int, debug_geometry: bool = False) -> str:
     """Return the shared assembly using global anchors on the X=0 centerline."""
     debug_call = "\n// DEBUG GEOMETRY ENABLED\ndebug_markers();" if debug_geometry else ""
     return f"""translate([0, blade_start_y, 0]) blade();
-translate([0, guard_center_y, 0]) guard();
+translate([0, guard_center_y, 0]) rotate([0, {guard_rotation}, 0]) guard();
 translate([0, (grip_start_y+grip_end_y)/2, 0]) grip();
 // Pommel overlaps the grip by pommel_overlap_mm to prevent rendering gaps.
-translate([0, pommel_center_y, 0]) pommel();
+translate([0, pommel_anchor_y, 0]) pommel();
 {debug_call}
 """
 
@@ -242,10 +272,12 @@ def generate_scad(
         f"\ndisk_guard_diameter_mm = {disk_guard_diameter(values):g};"
     )
     debug_module = make_debug_markers() if debug_geometry else ""
+    guard_rotation = get_guard_rotation(sword_type, blade_style)
 
     return f"""// Digital Forge Version 4: {sword_type}
 // Blade style: {blade_style}
 // Guard style: {guard_style}
+// Guard rotation around sword axis: {guard_rotation} degrees
 // Pommel style: {pommel_style}
 // Coordinate contract:
 // - Every part is centered on X=0 unless a style intentionally offsets its detail.
@@ -266,6 +298,7 @@ blade_start_y = guard_top_y;
 blade_tip_y = blade_start_y + blade_length_mm;
 pommel_overlap_mm = min(2, pommel_size_mm/4);
 pommel_center_y = grip_start_y - pommel_size_mm/2 + pommel_overlap_mm;
+pommel_anchor_y = {("grip_start_y + pommel_overlap_mm" if pommel_style == "spike" else "pommel_center_y")};
 pommel_top_y = pommel_center_y + pommel_size_mm/2;
 pommel_bottom_y = pommel_center_y - pommel_size_mm/2;
 effective_guard_width_mm = {("disk_guard_diameter_mm" if guard_style == "disk" else "guard_width_mm")};
@@ -275,4 +308,4 @@ effective_guard_width_mm = {("disk_guard_diameter_mm" if guard_style == "disk" e
 {make_grip()}
 {make_pommel(pommel_style)}
 {debug_module}
-{assemble_sword(debug_geometry)}"""
+{assemble_sword(guard_rotation, debug_geometry)}"""
