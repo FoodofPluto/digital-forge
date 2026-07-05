@@ -8,10 +8,12 @@ from scad_generator import (
     POMMEL_STYLES,
     blade_detail_bounds,
     clamp_blade_detail_offset,
+    compute_blade_detail_corridor,
     disk_guard_diameter,
     guard_should_rotate_90,
     normalize_component_visibility,
     resolve_tang_details,
+    resolve_fuller_dimensions,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 
@@ -48,6 +50,7 @@ def audit_geometry(
     fuller_offset_x: float = 0.0,
     ridge_offset_x: float = 0.0,
     fuller_width_mm: float = 12.0,
+    fuller_depth_mm: float = 0.8,
 ) -> dict[str, list[str]]:
     """Return warning, informational, and passing geometry audit messages."""
     warnings: list[str] = []
@@ -102,6 +105,7 @@ def audit_geometry(
     guard_width = dimensions["guard_width_mm"]
     guard_height = dimensions["guard_height_mm"]
     pommel_size = dimensions["pommel_size_mm"]
+    blade_thickness = dimensions["blade_thickness_mm"]
 
     if visible["tang"]:
         tang = resolve_tang_details(metrics)
@@ -155,8 +159,20 @@ def audit_geometry(
             if ridge_enabled:
                 passed.append("Central ridge stays within the blade body and clear of the guard and tip.")
         if fuller_enabled:
+            safe_width, safe_depth = resolve_fuller_dimensions(
+                blade_width, blade_thickness, fuller_width_mm, fuller_depth_mm
+            )
+            passed.append("Fuller uses subtractive rounded cutters to create a depressed groove.")
+            if safe_depth != fuller_depth_mm:
+                warnings.append("Fuller depth exceeds the shallow blade-thickness limit and will be clamped.")
+            else:
+                passed.append("Fuller depth remains below blade thickness.")
+            if safe_width != fuller_width_mm:
+                warnings.append("Fuller width exceeds the usable blade body and will be clamped.")
+            else:
+                passed.append("Fuller width fits inside the blade body.")
             safe_fuller_offset = clamp_blade_detail_offset(
-                blade_width, fuller_offset_x, min(fuller_width_mm, blade_width * 0.55),
+                blade_width, fuller_offset_x, safe_width, blade, blade_style,
             )
             if safe_fuller_offset != fuller_offset_x:
                 warnings.append("Fuller X offset exceeds safe blade bounds and will be clamped.")
@@ -164,7 +180,7 @@ def audit_geometry(
                 passed.append("Fuller X offset stays within safe blade bounds.")
         if ridge_enabled:
             safe_ridge_offset = clamp_blade_detail_offset(
-                blade_width, ridge_offset_x, blade_width * 0.14
+                blade_width, ridge_offset_x, blade_width * 0.14, blade, blade_style
             )
             if safe_ridge_offset != ridge_offset_x:
                 warnings.append("Central ridge X offset exceeds safe blade bounds and will be clamped.")
@@ -173,7 +189,12 @@ def audit_geometry(
         if blade_style in {"tapered", "leaf", "needle"} and fuller_offset_x == ridge_offset_x == 0:
             passed.append("Symmetrical blade details use centered default placement.")
         elif blade_style in {"falchion", "curved"}:
-            passed.append("Asymmetrical blade style supports conservative side-offset details.")
+            center, width = compute_blade_detail_corridor(blade_width, blade, blade_style)
+            passed.append(
+                f"Asymmetrical blade offsets stay inside a proportionate {width:g} mm usable corridor."
+            )
+            if fuller_enabled and ridge_enabled and abs(safe_fuller_offset-safe_ridge_offset) < safe_width/2:
+                info.append("Fuller and ridge overlap substantially; separate their positions for clearer detail.")
 
     if visible["grip"] and grip >= MIN_GRIP_LENGTH_MM:
         passed.append(f"Grip length meets the {MIN_GRIP_LENGTH_MM:g} mm minimum.")

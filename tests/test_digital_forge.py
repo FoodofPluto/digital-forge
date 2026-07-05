@@ -13,12 +13,14 @@ from scad_generator import (
     blade_detail_bounds,
     blade_detail_offset_for_position,
     clamp_blade_detail_offset,
+    compute_blade_detail_corridor,
     centered_peg_hole_positions,
     disk_guard_diameter,
     generate_scad,
     get_guard_rotation,
     has_visible_components,
     resolve_tang_details,
+    resolve_fuller_dimensions,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from showcase_presets import SHOWCASE_PRESETS, generate_showcase_scad, preset_metrics as showcase_metrics
@@ -128,6 +130,39 @@ def test_optional_blade_details_emit_geometry():
     assert "fuller_geometry();" in scad
     assert "module ridge_geometry()" in scad
     assert "ridge_geometry();" in scad
+
+
+def test_fuller_is_a_bounded_subtractive_rounded_depression():
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "tapered", "straight", "wheel",
+        fuller_enabled=True, fuller_depth_mm=0.9,
+    )
+    blade = scad.split("module blade()", 1)[1]
+    assert "difference()" in blade and "fuller_geometry();" in blade
+    assert "Rounded capsule cutters" in scad and "hull()" in scad and "sphere(d=fuller_width_mm)" in scad
+    assert "face*prop_blade_thickness_mm/2" in scad
+
+
+def test_fuller_dimensions_clamp_inside_prop_blade():
+    width, depth = resolve_fuller_dimensions(30, 4, 1000, 1000)
+    assert width == 30 * 0.42
+    assert depth == 4 * 0.28 < 4 / 2
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "tapered", "straight", "wheel",
+        fuller_enabled=True, fuller_width_mm=1000, fuller_depth_mm=1000,
+    )
+    assert f"fuller_width_mm = {preset_metrics('longsword')['blade_base_width_mm'] * 0.42:g};" in scad
+    assert "fuller_depth_mm = " in scad
+
+
+def test_ridge_remains_positive_and_outside_fuller_difference():
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "leaf", "straight", "wheel",
+        fuller_enabled=True, ridge_enabled=True,
+    )
+    blade = scad.split("module blade()", 1)[1]
+    assert blade.index("fuller_geometry();") < blade.index("ridge_geometry();")
+    assert "linear_extrude(height=ridge_height+0.15)" in scad
 
 
 def test_design_notes_exist_for_every_sword_type():
@@ -376,8 +411,12 @@ def test_symmetrical_blade_details_default_to_centered_offsets():
 def test_asymmetrical_blades_accept_left_and_right_detail_offsets():
     for style in ("falchion", "curved"):
         metrics = preset_metrics("falchion" if style == "falchion" else "longsword")
-        left = blade_detail_offset_for_position("Slight left", metrics["blade_base_width_mm"])
-        right = blade_detail_offset_for_position("Slight right", metrics["blade_base_width_mm"])
+        left = blade_detail_offset_for_position(
+            "Slight left", metrics["blade_base_width_mm"], metrics["blade_length_mm"], style
+        )
+        right = blade_detail_offset_for_position(
+            "Slight right", metrics["blade_base_width_mm"], metrics["blade_length_mm"], style
+        )
         scad = generate_scad(
             "longsword", metrics, style, "straight", "wheel",
             fuller_enabled=True, ridge_enabled=True,
@@ -385,8 +424,23 @@ def test_asymmetrical_blades_accept_left_and_right_detail_offsets():
         )
         assert f"fuller_offset_x = {left:g};" in scad
         assert f"ridge_offset_x = {right:g};" in scad
-        assert "translate([fuller_offset_x, 0, 0])" in scad
+        assert "translate([fuller_offset_x, 0, face*prop_blade_thickness_mm/2])" in scad
         assert "translate([ridge_offset_x, 0])" in scad
+
+
+def test_asymmetrical_detail_offsets_scale_and_stay_in_corridor():
+    for style in ("falchion", "curved"):
+        center, corridor = compute_blade_detail_corridor(50, 600, style)
+        left = blade_detail_offset_for_position("Slight left", 50, 600, style)
+        right = blade_detail_offset_for_position("Slight right", 50, 600, style)
+        assert center - corridor / 2 <= left < center < right <= center + corridor / 2
+        assert clamp_blade_detail_offset(50, -1000, 8, 600, style) >= center - corridor / 2
+        assert clamp_blade_detail_offset(50, 1000, 8, 600, style) <= center + corridor / 2
+
+
+def test_tapered_and_leaf_center_positions_remain_centered():
+    for style in ("tapered", "leaf"):
+        assert blade_detail_offset_for_position("Center", 50, 600, style) == 0
 
 
 def test_excessive_blade_detail_offsets_are_clamped_and_audited():

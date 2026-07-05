@@ -99,20 +99,56 @@ def blade_detail_bounds(
     return start, max(start, end)
 
 
-def blade_detail_offset_for_position(position: str, blade_width_mm: float) -> float:
+def compute_blade_detail_corridor(
+    blade_width_mm: float, blade_length_mm: float = 0.0, blade_style: str = "tapered"
+) -> tuple[float, float]:
+    """Return a conservative (center, width) corridor for long blade details."""
+    width = max(1.0, float(blade_width_mm))
+    length_factor = clamp(float(blade_length_mm) / (width * 8), 0.72, 1.0) if blade_length_mm else 1.0
+    if blade_style == "curved":
+        return width * 0.06, width * 0.42 * length_factor
+    if blade_style == "falchion":
+        return width * 0.05, width * 0.46 * length_factor
+    if blade_style == "needle":
+        return 0.0, width * 0.34 * length_factor
+    return 0.0, width * 0.50 * length_factor
+
+
+def blade_detail_offset_for_position(
+    position: str, blade_width_mm: float, blade_length_mm: float = 0.0,
+    blade_style: str = "tapered",
+) -> float:
     """Map the compact UI position labels to conservative X offsets."""
-    offsets = {"Center": 0.0, "Slight left": -0.08, "Slight right": 0.08}
-    return float(blade_width_mm) * offsets.get(position, 0.0)
+    center, corridor_width = compute_blade_detail_corridor(
+        blade_width_mm, blade_length_mm, blade_style
+    )
+    offsets = {"Center": 0.0, "Slight left": -0.18, "Slight right": 0.18}
+    return center + corridor_width * offsets.get(position, 0.0)
 
 
 def clamp_blade_detail_offset(
-    blade_width_mm: float, requested_offset_x: float, feature_width_mm: float
+    blade_width_mm: float, requested_offset_x: float, feature_width_mm: float,
+    blade_length_mm: float = 0.0, blade_style: str = "tapered",
 ) -> float:
     """Keep a detail near the blade center with room for its own half-width."""
-    blade_width = max(1.0, float(blade_width_mm))
+    corridor_center, corridor_width = compute_blade_detail_corridor(
+        blade_width_mm, blade_length_mm, blade_style
+    )
     feature_half_width = max(0.0, float(feature_width_mm)) / 2
-    max_offset = max(0.0, blade_width * 0.22 - feature_half_width)
-    return clamp(float(requested_offset_x), -max_offset, max_offset)
+    travel = max(0.0, corridor_width / 2 - feature_half_width)
+    return clamp(float(requested_offset_x), corridor_center - travel, corridor_center + travel)
+
+
+def resolve_fuller_dimensions(
+    blade_width_mm: float, blade_thickness_mm: float,
+    fuller_width_mm: float = 12.0, fuller_depth_mm: float = 0.8,
+) -> tuple[float, float]:
+    """Clamp a visible groove safely inside the prop blade cross-section."""
+    width = max(1.0, float(blade_width_mm))
+    thickness = max(2.4, float(blade_thickness_mm))
+    safe_width = clamp(float(fuller_width_mm), 1.0, width * 0.42)
+    safe_depth = clamp(float(fuller_depth_mm), 0.35, thickness * 0.28)
+    return safe_width, safe_depth
 
 
 def resolve_tang_details(metrics: dict[str, float]) -> dict[str, float]:
@@ -261,16 +297,17 @@ def make_blade(blade_style: str, fuller_enabled: bool, ridge_enabled: bool) -> s
         fuller = """
 module fuller_geometry() {
     channel_length = blade_detail_end_y-blade_detail_start_y;
-    channel_depth = max(0.4, prop_blade_thickness_mm*0.18);
-    for (face=[-1, 1]) translate([0, blade_detail_start_y+channel_length/2,
-        face*(prop_blade_thickness_mm/2-channel_depth/2)])
+    // Rounded capsule cutters penetrate both faces to form a true shallow depression.
+    for (face=[-1, 1])
         intersection() {
-            translate([fuller_offset_x, 0, 0])
-                cube([min(fuller_width_mm, blade_base_width_mm*0.55), channel_length,
-                    channel_depth], center=true);
-            translate([0, -(blade_detail_start_y+blade_detail_end_y)/2, 0])
-                linear_extrude(height=prop_blade_thickness_mm*2, center=true)
-                    blade_profile_2d();
+            linear_extrude(height=prop_blade_thickness_mm*2, center=true) blade_profile_2d();
+            translate([fuller_offset_x, 0, face*prop_blade_thickness_mm/2])
+                hull()
+                    for (y=[blade_detail_start_y+fuller_width_mm/2,
+                            blade_detail_end_y-fuller_width_mm/2])
+                        translate([0, y, 0])
+                            scale([1, 1, fuller_depth_mm/(fuller_width_mm/2)])
+                                sphere(d=fuller_width_mm);
         }
 }
 """
@@ -450,6 +487,7 @@ def generate_scad(
     visible_components: dict[str, bool] | None = None,
     fuller_offset_x: float = 0.0,
     ridge_offset_x: float = 0.0,
+    fuller_depth_mm: float = 0.8,
 ) -> str:
     """Build a complete decorative OpenSCAD program from dimensions and styles."""
     values = dict(metrics)
@@ -464,11 +502,14 @@ def generate_scad(
     detail_start, detail_end = blade_detail_bounds(
         blade_length, ricasso_length, fuller_length_ratio, blade_style
     )
+    resolved_fuller_width, resolved_fuller_depth = resolve_fuller_dimensions(
+        blade_width, blade_thickness, fuller_width_mm, fuller_depth_mm
+    )
     resolved_fuller_offset = clamp_blade_detail_offset(
-        blade_width, fuller_offset_x, min(float(fuller_width_mm), blade_width * 0.55)
+        blade_width, fuller_offset_x, resolved_fuller_width, blade_length, blade_style
     )
     resolved_ridge_offset = clamp_blade_detail_offset(
-        blade_width, ridge_offset_x, blade_width * 0.14
+        blade_width, ridge_offset_x, blade_width * 0.14, blade_length, blade_style
     )
     tang = resolve_tang_details(values)
     tang_blade_overlap = max(3.0, min(ricasso_length, blade_width * 0.5))
@@ -482,7 +523,8 @@ def generate_scad(
     )
     assignments += (
         f"\nfuller_length_ratio = {fuller_length_ratio:g};"
-        f"\nfuller_width_mm = {fuller_width_mm:g};"
+        f"\nfuller_width_mm = {resolved_fuller_width:g};"
+        f"\nfuller_depth_mm = {resolved_fuller_depth:g};"
         f"\nfuller_offset_x = {resolved_fuller_offset:g};"
         f"\nridge_offset_x = {resolved_ridge_offset:g};"
         f"\n// Blade-local detail bounds exclude the guard/ricasso and blunt tip."
