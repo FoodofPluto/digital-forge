@@ -6,7 +6,15 @@ from design_notes import get_design_notes
 from geometry_audit import audit_geometry
 from preview_service import export_with_openscad
 from realism_rules import check_realism
-from scad_generator import BLADE_STYLES, GUARD_STYLES, POMMEL_STYLES, generate_scad
+from scad_generator import (
+    BLADE_STYLES,
+    COMPONENT_NAMES,
+    GUARD_STYLES,
+    POMMEL_STYLES,
+    VISIBILITY_PRESETS,
+    generate_scad,
+    has_visible_components,
+)
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 
 st.set_page_config(page_title="Digital Forge", page_icon="DF", layout="wide")
@@ -29,6 +37,34 @@ with style_col2:
     guard_style = st.selectbox("Guard style", GUARD_STYLES)
 with style_col3:
     pommel_style = st.selectbox("Pommel style", POMMEL_STYLES)
+
+st.subheader("Assembly view")
+
+
+def apply_visibility_preset() -> None:
+    for component, visible in VISIBILITY_PRESETS[st.session_state.visibility_preset].items():
+        st.session_state[f"show_{component}"] = visible
+
+
+visibility_preset = st.selectbox(
+    "Quick preset",
+    list(VISIBILITY_PRESETS),
+    key="visibility_preset",
+    on_change=apply_visibility_preset,
+)
+visibility_columns = st.columns(len(COMPONENT_NAMES))
+visible_components = {}
+for column, component in zip(visibility_columns, COMPONENT_NAMES):
+    key = f"show_{component}"
+    if key not in st.session_state:
+        st.session_state[key] = VISIBILITY_PRESETS[visibility_preset][component]
+    with column:
+        visible_components[component] = st.checkbox(
+            component.title(), key=key, help=f"Show or hide the {component} at its assembly position."
+        )
+has_visible_component = has_visible_components(visible_components)
+if not has_visible_component:
+    st.warning("Select at least one component to preview or export.")
 
 st.subheader("Dimensions")
 metric_columns = st.columns(3)
@@ -71,7 +107,9 @@ else:
     st.success("All dimensions are within the preset's typical ranges and proportions.")
 
 st.subheader("Geometry audit")
-audit = audit_geometry(metrics, sword_type, blade_style, guard_style, pommel_style)
+audit = audit_geometry(
+    metrics, sword_type, blade_style, guard_style, pommel_style, visible_components
+)
 audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
 with audit_warning_col:
     st.markdown("**Warnings**")
@@ -103,6 +141,7 @@ scad = generate_scad(
     fuller_width_mm,
     ridge_enabled,
     debug_geometry,
+    visible_components,
 )
 st.subheader("Generated OpenSCAD")
 st.code(scad, language="openscad")
@@ -112,7 +151,7 @@ st.download_button(
 
 preview_col, stl_col = st.columns(2)
 with preview_col:
-    if st.button("Generate OpenSCAD Preview"):
+    if st.button("Generate OpenSCAD Preview", disabled=not has_visible_component):
         result = export_with_openscad(scad, openscad_path, "png")
         if result.success and result.path:
             st.success(result.message)
@@ -120,7 +159,7 @@ with preview_col:
         else:
             st.error(result.message)
 with stl_col:
-    if st.button("Generate STL"):
+    if st.button("Generate STL", disabled=not has_visible_component):
         result = export_with_openscad(scad, openscad_path, "stl")
         if result.success and result.path:
             try:

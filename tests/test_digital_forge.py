@@ -9,11 +9,14 @@ from realism_rules import check_realism
 from scad_generator import (
     BLADE_STYLES,
     GUARD_STYLES,
+    VISIBILITY_PRESETS,
     disk_guard_diameter,
     generate_scad,
     get_guard_rotation,
+    has_visible_components,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
+from showcase_presets import SHOWCASE_PRESETS, generate_showcase_scad, preset_metrics as showcase_metrics
 
 
 def preset_metrics(sword_type: str) -> dict[str, float]:
@@ -26,6 +29,30 @@ def test_presets_contain_all_required_metrics():
         assert set(preset) == set(REQUIRED_METRICS)
         for spec in preset.values():
             assert spec["min"] <= spec["default"] <= spec["max"]
+
+
+def test_showcase_contains_requested_named_configurations():
+    assert [preset.name for preset in SHOWCASE_PRESETS] == [
+        "Straight Sword",
+        "Falchion",
+        "Curved Saber",
+        "Crescent Guard Sword",
+        "Disk Guard Sword",
+        "Spike Pommel Sword",
+        "Leaf Blade Sword",
+    ]
+
+
+def test_showcase_presets_generate_with_supported_values():
+    for preset in SHOWCASE_PRESETS:
+        assert preset.sword_type in SWORD_PRESETS
+        assert preset.blade_style in BLADE_STYLES
+        assert preset.guard_style in GUARD_STYLES
+        assert preset.pommel_style in ("sphere", "wheel", "ring", "spike")
+        assert set(showcase_metrics(preset)) == set(REQUIRED_METRICS)
+        scad = generate_showcase_scad(preset)
+        assert f"Digital Forge Version 4: {preset.sword_type}" in scad
+        assert f"Blade style: {preset.blade_style}" in scad
 
 
 def test_every_preset_has_ricasso():
@@ -131,6 +158,38 @@ def test_geometry_contract_and_connected_anchors():
     assert "translate([0, guard_center_y, 0]) rotate([0, 0, 0]) guard();" in scad
 
 
+def test_grip_is_elliptical_and_preserves_external_length_metric():
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "tapered", "straight", "sphere"
+    )
+    assert "grip_depth_mm/grip_width_mm" in scad
+    assert "cylinder(h=grip_length_mm, d=grip_width_mm, center=true)" in scad
+    assert "cube([grip_width_mm, grip_length_mm, grip_width_mm]" not in scad
+
+
+def test_internal_tang_is_distinct_and_crosses_blade_grip_boundary():
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "tapered", "straight", "sphere"
+    )
+    assert "module tang_core()" in scad
+    assert "tang_width_mm" in scad and "tang_thickness_mm" in scad
+    assert "tang_length_mm = grip_length_mm" not in scad
+    assert "tang_bottom_y = grip_start_y - tang_pommel_overlap_mm;" in scad
+    assert "tang_top_y = blade_start_y + tang_blade_overlap_mm;" in scad
+    assert "translate([0, tang_center_y, 0]) tang_core();" in scad
+
+
+def test_blade_output_enforces_blunt_prop_minimums():
+    scad = generate_scad(
+        "rapier", preset_metrics("rapier"), "needle", "straight", "wheel"
+    )
+    assert "min_prop_tip_width_mm = 3;" in scad
+    assert "min_prop_blade_thickness_mm = 2.4;" in scad
+    assert "prop_tip_width_mm = max(blade_tip_width_mm" in scad
+    assert "linear_extrude(height=prop_blade_thickness_mm" in scad
+    assert "[0, blade_length_mm]" not in scad
+
+
 def test_guard_orientations_disk_cap_and_falchion_profile():
     metrics = preset_metrics("greatsword")
     crescent = generate_scad("greatsword", metrics, "falchion", "crescent", "wheel")
@@ -178,6 +237,9 @@ def test_geometry_audit_reports_normal_contacts_and_orientation():
     assert "Grip-to-guard contact" in combined
     assert "Guard-to-blade contact" in combined
     assert "pronounced silhouette" in combined
+    assert "Oval grip" in combined
+    assert "tang/core extends" in combined
+    assert "minimum blunt edge thickness" in combined
 
 
 def test_ring_guard_is_removed_from_available_options():
@@ -261,3 +323,99 @@ def test_preview_rejects_empty_scad_and_invalid_executable_path():
     invalid_path = export_with_openscad("cube(1);", r"C:\missing\openscad.exe")
     assert empty.error_code == "invalid_scad"
     assert invalid_path.error_code == "invalid_executable"
+
+
+def _assembly_calls(scad: str) -> str:
+    return scad.rsplit("// Visible components remain at their full-assembly anchors.", 1)[1]
+
+
+def test_full_sword_visibility_is_the_default():
+    scad = generate_scad("longsword", preset_metrics("longsword"), "tapered", "straight", "sphere")
+    calls = _assembly_calls(scad)
+    assert "Visible components: blade, tang, guard, grip, pommel" in scad
+    assert all(call in calls for call in ("blade();", "tang_core();", "guard();", "grip();", "pommel();"))
+
+
+def test_blade_and_tang_only_excludes_other_components():
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "tapered", "straight", "sphere",
+        visible_components=VISIBILITY_PRESETS["Blade + tang only"],
+    )
+    calls = _assembly_calls(scad)
+    assert "blade();" in calls and "tang_core();" in calls
+    assert all(call not in calls for call in ("guard();", "grip();", "pommel();"))
+
+
+def test_handle_and_guard_only_presets_emit_expected_components():
+    metrics = preset_metrics("longsword")
+    handle = _assembly_calls(generate_scad(
+        "longsword", metrics, "tapered", "straight", "sphere",
+        visible_components=VISIBILITY_PRESETS["Handle assembly only"],
+    ))
+    guard = _assembly_calls(generate_scad(
+        "longsword", metrics, "tapered", "straight", "sphere",
+        visible_components=VISIBILITY_PRESETS["Guard/hilt only"],
+    ))
+    assert all(call in handle for call in ("tang_core();", "grip();", "pommel();"))
+    assert "blade();" not in handle and "guard();" not in handle
+    assert "guard();" in guard
+    assert all(call not in guard for call in ("blade();", "tang_core();", "grip();", "pommel();"))
+    assert "translate([0, guard_center_y, 0])" in guard
+
+
+def test_hiding_grip_keeps_tang_and_hiding_guard_keeps_other_parts():
+    metrics = preset_metrics("longsword")
+    no_grip = _assembly_calls(generate_scad(
+        "longsword", metrics, "tapered", "straight", "sphere",
+        visible_components={"grip": False},
+    ))
+    no_guard = _assembly_calls(generate_scad(
+        "longsword", metrics, "tapered", "straight", "sphere",
+        visible_components={"guard": False},
+    ))
+    assert "grip();" not in no_grip and "tang_core();" in no_grip
+    assert "guard();" not in no_guard
+    assert all(call in no_guard for call in ("blade();", "tang_core();", "grip();", "pommel();"))
+
+
+def test_geometry_audit_skips_intentionally_hidden_component_checks():
+    metrics = preset_metrics("longsword")
+    metrics.update(blade_length_mm=-1, grip_length_mm=10, guard_width_mm=1000, pommel_size_mm=200)
+    visible = VISIBILITY_PRESETS["Tang only"]
+    audit = audit_geometry(metrics, "longsword", "unknown", "unknown", "unknown", visible)
+    combined = " ".join(audit["warnings"])
+    assert "Blade Length" not in combined
+    assert "Grip length is below" not in combined
+    assert "Guard width exceeds" not in combined
+    assert "Pommel radius exceeds" not in combined
+    assert any("Assembly view: tang" in message for message in audit["info"])
+    assert any("tang/core extends" in message for message in audit["passes"])
+
+
+def test_empty_component_selection_is_safe_and_reported():
+    hidden = {name: False for name in ("blade", "tang", "guard", "grip", "pommel")}
+    metrics = {name: -1 for name in REQUIRED_METRICS}
+    scad = generate_scad(
+        "longsword", metrics, "tapered", "straight", "sphere", visible_components=hidden
+    )
+    audit = audit_geometry(
+        metrics, "longsword", "tapered", "straight", "sphere", hidden
+    )
+    assert not has_visible_components(hidden)
+    assert "Visible components: none" in scad
+    assert "EMPTY ASSEMBLY" in scad
+    assert not audit["warnings"]
+    assert any("no components visible" in message for message in audit["info"])
+    assert any("preview or export" in message for message in audit["info"])
+
+
+def test_one_visible_component_still_generates_normal_scad():
+    visible = {name: name == "blade" for name in ("blade", "tang", "guard", "grip", "pommel")}
+    scad = generate_scad(
+        "longsword", preset_metrics("longsword"), "tapered", "straight", "sphere",
+        visible_components=visible,
+    )
+    assert has_visible_components(visible)
+    assert "module blade()" in scad
+    assert "translate([0, blade_start_y, 0]) blade();" in scad
+    assert "EMPTY ASSEMBLY" not in scad

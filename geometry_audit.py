@@ -8,6 +8,7 @@ from scad_generator import (
     POMMEL_STYLES,
     disk_guard_diameter,
     guard_should_rotate_90,
+    normalize_component_visibility,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 
@@ -37,27 +38,49 @@ def audit_geometry(
     blade_style: str,
     guard_style: str,
     pommel_style: str,
+    visible_components: dict[str, bool] | None = None,
 ) -> dict[str, list[str]]:
     """Return warning, informational, and passing geometry audit messages."""
     warnings: list[str] = []
     info: list[str] = []
     passed: list[str] = []
+    visible = normalize_component_visibility(visible_components)
+    visible_names = [name for name, is_visible in visible.items() if is_visible]
+    info.append(
+        "Assembly view: " + (", ".join(visible_names) if visible_names else "no components visible") + "."
+    )
+    if not visible_names:
+        info.append("Select at least one visible component to preview or export.")
 
     if sword_type not in SWORD_PRESETS:
         warnings.append(f"Unsupported sword type '{sword_type}'; using generic geometry checks.")
-    if blade_style not in SUPPORTED_BLADE_STYLES:
+    if visible["blade"] and blade_style not in SUPPORTED_BLADE_STYLES:
         warnings.append(f"Unsupported blade style '{blade_style}'.")
-    if guard_style not in SUPPORTED_GUARD_STYLES:
+    if visible["guard"] and guard_style not in SUPPORTED_GUARD_STYLES:
         warnings.append(f"Unsupported guard style '{guard_style}'.")
-    if pommel_style not in SUPPORTED_POMMEL_STYLES:
+    if visible["pommel"] and pommel_style not in SUPPORTED_POMMEL_STYLES:
         warnings.append(f"Unsupported pommel style '{pommel_style}'.")
-    if sword_type == "rapier" and blade_style == "falchion":
+    if visible["blade"] and sword_type == "rapier" and blade_style == "falchion":
         warnings.append("Unsupported combination: a falchion blade profile is not supported for rapiers.")
-    if sword_type == "dagger" and guard_style == "disk":
+    if visible["guard"] and sword_type == "dagger" and guard_style == "disk":
         warnings.append("Unsupported combination: disk guards are not supported for dagger presets.")
 
     dimensions = {name: _number(metrics, name) for name in REQUIRED_METRICS}
+    required_by_component = {
+        "blade_length_mm": visible["blade"],
+        "blade_base_width_mm": visible["blade"] or visible["tang"] or visible["guard"],
+        "blade_tip_width_mm": visible["blade"],
+        "blade_thickness_mm": visible["blade"] or visible["tang"],
+        "grip_length_mm": visible["grip"] or visible["tang"] or visible["pommel"],
+        "grip_width_mm": visible["grip"] or visible["tang"] or visible["guard"],
+        "guard_width_mm": visible["guard"],
+        "guard_height_mm": visible["guard"] or visible["tang"] or visible["blade"],
+        "pommel_size_mm": visible["pommel"],
+        "ricasso_length_mm": visible["blade"] or visible["tang"],
+    }
     for name, value in dimensions.items():
+        if not required_by_component.get(name, False):
+            continue
         if name == "ricasso_length_mm":
             if value < 0:
                 warnings.append("Ricasso length cannot be negative.")
@@ -71,27 +94,27 @@ def audit_geometry(
     guard_height = dimensions["guard_height_mm"]
     pommel_size = dimensions["pommel_size_mm"]
 
-    if grip >= MIN_GRIP_LENGTH_MM:
+    if visible["grip"] and grip >= MIN_GRIP_LENGTH_MM:
         passed.append(f"Grip length meets the {MIN_GRIP_LENGTH_MM:g} mm minimum.")
-    elif grip > 0:
+    elif visible["grip"] and grip > 0:
         warnings.append(f"Grip length is below the {MIN_GRIP_LENGTH_MM:g} mm minimum.")
 
-    if blade > grip > 0:
+    if visible["blade"] and visible["grip"] and blade > grip > 0:
         passed.append("Blade length is greater than grip length.")
-    elif blade > 0 and grip > 0:
+    elif visible["blade"] and visible["grip"] and blade > 0 and grip > 0:
         warnings.append("Blade length must be greater than grip length.")
 
-    if blade_width > 0 and guard_width > 0:
+    if visible["blade"] and visible["guard"] and blade_width > 0 and guard_width > 0:
         if guard_width < blade_width * 1.5:
             warnings.append("Guard width is too narrow relative to the blade base width.")
         elif guard_width > blade_width * 8:
             warnings.append("Guard width is excessive relative to the blade base width.")
         else:
             passed.append("Guard width is proportionate to the blade base.")
-    if guard_width > MAX_GUARD_WIDTH_MM:
+    if visible["guard"] and guard_width > MAX_GUARD_WIDTH_MM:
         warnings.append(f"Guard width exceeds the {MAX_GUARD_WIDTH_MM:g} mm maximum.")
 
-    if guard_style == "disk" and blade_width > 0:
+    if visible["guard"] and guard_style == "disk" and blade_width > 0:
         capped = disk_guard_diameter(dimensions)
         if capped > MAX_DISK_GUARD_DIAMETER_MM:
             warnings.append(
@@ -106,38 +129,45 @@ def audit_geometry(
         passed.append("Disk guard's thin Y axis touches the top of the grip without blocking the blade base.")
 
     pommel_radius = pommel_size / 2
-    if pommel_radius > MAX_POMMEL_RADIUS_MM:
+    if visible["pommel"] and pommel_radius > MAX_POMMEL_RADIUS_MM:
         warnings.append(f"Pommel radius exceeds the {MAX_POMMEL_RADIUS_MM:g} mm maximum.")
-    elif pommel_radius > 0:
+    elif visible["pommel"] and pommel_radius > 0:
         passed.append("Pommel radius is within the decorative size limit.")
 
     # Version 4 coordinate contract: grip ends at Y=0, the guard occupies
     # Y=0..guard_height, and the blade begins at guard_height.
-    if grip > 0 and pommel_size > 0:
+    if visible["grip"] and visible["pommel"] and grip > 0 and pommel_size > 0:
         passed.append("Pommel-to-grip contact is maintained by the shared overlap anchor.")
-    if grip > 0 and guard_height > 0:
+    if visible["grip"] and visible["guard"] and grip > 0 and guard_height > 0:
         passed.append("Grip-to-guard contact is maintained at Y = 0.")
-    if blade > 0 and guard_height > 0:
+    if visible["blade"] and visible["guard"] and blade > 0 and guard_height > 0:
         passed.append("Guard-to-blade contact is maintained at guard_top_y.")
+    if visible["grip"] and visible["blade"] and visible["guard"] and grip > 0 and blade > 0 and guard_height > 0:
+        passed.append("Oval grip is wider across the hand than its front-to-back depth.")
+        passed.append("External grip dimensions remain distinct from and enclose the tang/core.")
+        passed.append("Blade uses minimum blunt edge thickness and a capped prop-safe tip width.")
+        passed.append("Blade, guard, grip, tang/core, and pommel share or overlap axial contact anchors.")
+    if visible["tang"] and grip > 0 and guard_height > 0:
+        passed.append("Decorative tang/core extends from the blade base through the guard into the grip.")
 
-    if guard_style == "crescent":
+    if visible["guard"] and guard_style == "crescent":
         passed.append("Crescent guard uses an enlarged outer arc and deeper cutout for a pronounced silhouette.")
-    elif guard_style == "downturned":
+    elif visible["guard"] and guard_style == "downturned":
         passed.append("Downturned guard arms sweep toward +Y and the blade.")
-    elif guard_style in {"straight", "disk"}:
+    elif visible["guard"] and guard_style in {"straight", "disk"}:
         passed.append("Guard is centered perpendicular to the +Y blade direction.")
 
-    if guard_should_rotate_90(sword_type, blade_style):
+    if visible["guard"] and guard_should_rotate_90(sword_type, blade_style):
         passed.append("Guard rotates 90 degrees around +Y for this sword/blade profile.")
-    else:
+    elif visible["guard"]:
         passed.append("Guard uses the normal orientation for this sword/blade profile.")
 
-    if blade_style == "falchion":
+    if visible["blade"] and blade_style == "falchion":
         passed.append("Falchion uses a widened forward belly and slanted chopping point.")
-    elif blade_style == "curved":
+    elif visible["blade"] and blade_style == "curved":
         passed.append("Curved blade sweeps visibly toward +X along its length.")
 
-    if pommel_style == "spike":
+    if visible["pommel"] and pommel_style == "spike":
         passed.append("Spike pommel is rooted at the grip bottom and points toward -Y.")
 
     return {"warnings": warnings, "info": info, "passes": passed}

@@ -3,6 +3,33 @@
 BLADE_STYLES = ("tapered", "leaf", "needle", "curved", "falchion")
 GUARD_STYLES = ("straight", "crescent", "downturned", "disk")
 POMMEL_STYLES = ("sphere", "wheel", "ring", "spike")
+COMPONENT_NAMES = ("blade", "tang", "guard", "grip", "pommel")
+FULL_COMPONENT_VISIBILITY = {name: True for name in COMPONENT_NAMES}
+VISIBILITY_PRESETS = {
+    "Full sword": FULL_COMPONENT_VISIBILITY,
+    "Blade + tang only": {"blade": True, "tang": True, "guard": False, "grip": False, "pommel": False},
+    "Handle assembly only": {"blade": False, "tang": True, "guard": False, "grip": True, "pommel": True},
+    "Guard/hilt only": {"blade": False, "tang": False, "guard": True, "grip": False, "pommel": False},
+    "Blade only": {"blade": True, "tang": False, "guard": False, "grip": False, "pommel": False},
+    "Tang only": {"blade": False, "tang": True, "guard": False, "grip": False, "pommel": False},
+}
+
+
+def normalize_component_visibility(
+    visible_components: dict[str, bool] | None = None,
+) -> dict[str, bool]:
+    """Return a complete visibility mapping; omitted values preserve the full sword."""
+    visibility = dict(FULL_COMPONENT_VISIBILITY)
+    if visible_components is not None:
+        visibility.update(
+            {name: bool(visible_components[name]) for name in COMPONENT_NAMES if name in visible_components}
+        )
+    return visibility
+
+
+def has_visible_components(visible_components: dict[str, bool] | None = None) -> bool:
+    """Return whether the normalized assembly contains at least one component."""
+    return any(normalize_component_visibility(visible_components).values())
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -32,16 +59,18 @@ def get_guard_rotation(sword_type: str, blade_style: str) -> int:
 def _blade_polygon(style: str) -> str:
     profiles = {
         "tapered": """[[-blade_base_width_mm/2, ricasso_length_mm],
-        [-blade_tip_width_mm/2, blade_length_mm], [blade_tip_width_mm/2, blade_length_mm],
+        [-prop_tip_width_mm/2, blade_length_mm], [prop_tip_width_mm/2, blade_length_mm],
         [blade_base_width_mm/2, ricasso_length_mm]]""",
         "leaf": """[[-blade_base_width_mm/2, ricasso_length_mm],
         [-blade_base_width_mm*0.42, blade_length_mm*0.42],
-        [-blade_base_width_mm*0.64, blade_length_mm*0.70], [0, blade_length_mm],
+        [-blade_base_width_mm*0.64, blade_length_mm*0.70],
+        [-prop_tip_width_mm/2, blade_length_mm], [prop_tip_width_mm/2, blade_length_mm],
         [blade_base_width_mm*0.64, blade_length_mm*0.70],
         [blade_base_width_mm*0.42, blade_length_mm*0.42],
         [blade_base_width_mm/2, ricasso_length_mm]]""",
         "needle": """[[-blade_base_width_mm/2, ricasso_length_mm],
-        [-blade_tip_width_mm, blade_length_mm*0.72], [0, blade_length_mm],
+        [-blade_tip_width_mm, blade_length_mm*0.72],
+        [-prop_tip_width_mm/2, blade_length_mm], [prop_tip_width_mm/2, blade_length_mm],
         [blade_tip_width_mm, blade_length_mm*0.72],
         [blade_base_width_mm/2, ricasso_length_mm]]""",
         # Both edges sweep toward +X, producing an obvious sabre-like curve.
@@ -169,7 +198,8 @@ module blade_profile_2d() {{
 module blade() {{
     color("silver") union() {{
         difference() {{
-            linear_extrude(height=blade_thickness_mm, center=true) blade_profile_2d();
+            // A minimum Z thickness and capped 2D tip keep this a blunt printable prop.
+            linear_extrude(height=prop_blade_thickness_mm, center=true) blade_profile_2d();
             {fuller_call}
         }}
         {ridge_call}
@@ -189,8 +219,20 @@ def make_guard(guard_style: str) -> str:
 def make_grip() -> str:
     """Return a grip module whose local Y extent is centered."""
     return """module grip() {
-    color("saddlebrown")
-        cube([grip_width_mm, grip_length_mm, grip_width_mm], center=true);
+    // Elliptical sword grip: wider across X, thinner front-to-back along Z.
+    color("saddlebrown") rotate([90, 0, 0])
+        scale([1, grip_depth_mm/grip_width_mm, 1])
+            cylinder(h=grip_length_mm, d=grip_width_mm, center=true);
+}
+"""
+
+
+def make_tang() -> str:
+    """Return the decorative internal core joining blade, guard, and grip."""
+    return """module tang_core() {
+    // Non-functional prop core; the external oval grip encloses this geometry.
+    color("dimgray")
+        cube([tang_width_mm, tang_length_mm, tang_thickness_mm], center=true);
 }
 """
 
@@ -215,7 +257,7 @@ def make_debug_markers(include_bounds: bool = True) -> str:
             cube([effective_guard_width_mm, guard_height_mm, guard_height_mm*1.8], center=true);
     color([0.5, 0.25, 0.1, 0.18])
         translate([0, (grip_start_y+grip_end_y)/2, 0])
-            cube([grip_width_mm, grip_length_mm, grip_width_mm*1.5], center=true);
+            cube([grip_width_mm, grip_length_mm, grip_depth_mm*1.5], center=true);
     color([0.7, 0.2, 1.0, 0.18])
         translate([0, pommel_center_y, 0]) sphere(d=pommel_size_mm*1.08);
 """ if include_bounds else ""
@@ -238,14 +280,26 @@ module debug_markers() {{
 """
 
 
-def assemble_sword(guard_rotation: int, debug_geometry: bool = False) -> str:
+def assemble_sword(
+    guard_rotation: int,
+    debug_geometry: bool = False,
+    visible_components: dict[str, bool] | None = None,
+) -> str:
     """Return the shared assembly using global anchors on the X=0 centerline."""
+    visible = normalize_component_visibility(visible_components)
     debug_call = "\n// DEBUG GEOMETRY ENABLED\ndebug_markers();" if debug_geometry else ""
-    return f"""translate([0, blade_start_y, 0]) blade();
-translate([0, guard_center_y, 0]) rotate([0, {guard_rotation}, 0]) guard();
-translate([0, (grip_start_y+grip_end_y)/2, 0]) grip();
-// Pommel overlaps the grip by pommel_overlap_mm to prevent rendering gaps.
-translate([0, pommel_anchor_y, 0]) pommel();
+    calls = {
+        "tang": "translate([0, tang_center_y, 0]) tang_core();",
+        "blade": "translate([0, blade_start_y, 0]) blade();",
+        "guard": f"translate([0, guard_center_y, 0]) rotate([0, {guard_rotation}, 0]) guard();",
+        "grip": "translate([0, (grip_start_y+grip_end_y)/2, 0]) grip();",
+        "pommel": "// Pommel overlaps the grip by pommel_overlap_mm to prevent rendering gaps.\ntranslate([0, pommel_anchor_y, 0]) pommel();",
+    }
+    assembly = "\n".join(calls[name] for name in COMPONENT_NAMES if visible[name])
+    if not assembly:
+        assembly = "// EMPTY ASSEMBLY: select at least one component to preview or export."
+    return f"""// Visible components remain at their full-assembly anchors.
+{assembly}
 {debug_call}
 """
 
@@ -261,24 +315,59 @@ def generate_scad(
     fuller_width_mm: float = 12,
     ridge_enabled: bool = False,
     debug_geometry: bool = False,
+    visible_components: dict[str, bool] | None = None,
 ) -> str:
     """Build a complete decorative OpenSCAD program from dimensions and styles."""
     values = dict(metrics)
     values.setdefault("ricasso_length_mm", 0)
+    grip_width = max(1.0, float(values.get("grip_width_mm", 1.0)))
+    blade_width = max(1.0, float(values.get("blade_base_width_mm", 1.0)))
+    blade_thickness = max(1.0, float(values.get("blade_thickness_mm", 1.0)))
+    grip_length = max(1.0, float(values.get("grip_length_mm", 1.0)))
+    guard_height = max(1.0, float(values.get("guard_height_mm", 1.0)))
+    ricasso_length = max(0.0, float(values.get("ricasso_length_mm", 0.0)))
+    grip_depth = max(blade_thickness * 1.8, grip_width * 0.68)
+    tang_width = min(blade_width * 0.55, grip_width * 0.52)
+    tang_thickness = min(max(2.4, blade_thickness * 0.72), grip_depth * 0.55)
+    tang_blade_overlap = max(3.0, min(ricasso_length, blade_width * 0.5))
+    tang_pommel_overlap = min(2.0, grip_length * 0.02)
+    tang_length = grip_length + guard_height + tang_blade_overlap + tang_pommel_overlap
     assignments = "\n".join(f"{name} = {value:g};" for name, value in values.items())
     assignments += (
         f"\nfuller_length_ratio = {fuller_length_ratio:g};"
         f"\nfuller_width_mm = {fuller_width_mm:g};"
         f"\ndisk_guard_diameter_mm = {disk_guard_diameter(values):g};"
+        f"\n// External grip dimensions remain independent from the internal prop core."
+        f"\ngrip_depth_mm = {grip_depth:g};"
+        f"\ntang_width_mm = {tang_width:g};"
+        f"\ntang_thickness_mm = {tang_thickness:g};"
+        f"\ntang_blade_overlap_mm = {tang_blade_overlap:g};"
+        f"\ntang_pommel_overlap_mm = {tang_pommel_overlap:g};"
+        f"\ntang_length_mm = {tang_length:g};"
+        f"\nmin_prop_tip_width_mm = 3;"
+        f"\nmin_prop_blade_thickness_mm = 2.4;"
+        f"\nprop_tip_width_mm = max(blade_tip_width_mm, min_prop_tip_width_mm);"
+        f"\nprop_blade_thickness_mm = max(blade_thickness_mm, min_prop_blade_thickness_mm);"
     )
     debug_module = make_debug_markers() if debug_geometry else ""
     guard_rotation = get_guard_rotation(sword_type, blade_style)
+    visible = normalize_component_visibility(visible_components)
+    visible_names = ", ".join(name for name in COMPONENT_NAMES if visible[name]) or "none"
+    modules = {
+        "blade": make_blade(blade_style, fuller_enabled, ridge_enabled),
+        "tang": make_tang(),
+        "guard": make_guard(guard_style),
+        "grip": make_grip(),
+        "pommel": make_pommel(pommel_style),
+    }
+    component_modules = "\n".join(modules[name] for name in COMPONENT_NAMES if visible[name])
 
     return f"""// Digital Forge Version 4: {sword_type}
 // Blade style: {blade_style}
 // Guard style: {guard_style}
 // Guard rotation around sword axis: {guard_rotation} degrees
 // Pommel style: {pommel_style}
+// Visible components: {visible_names}
 // Coordinate contract:
 // - Every part is centered on X=0 unless a style intentionally offsets its detail.
 // - The sword points along +Y. From low to high: pommel, grip, guard, blade.
@@ -296,6 +385,9 @@ guard_y = guard_center_y;
 guard_top_y = guard_bottom_y + guard_height_mm;
 blade_start_y = guard_top_y;
 blade_tip_y = blade_start_y + blade_length_mm;
+tang_bottom_y = grip_start_y - tang_pommel_overlap_mm;
+tang_top_y = blade_start_y + tang_blade_overlap_mm;
+tang_center_y = (tang_bottom_y + tang_top_y)/2;
 pommel_overlap_mm = min(2, pommel_size_mm/4);
 pommel_center_y = grip_start_y - pommel_size_mm/2 + pommel_overlap_mm;
 pommel_anchor_y = {("grip_start_y + pommel_overlap_mm" if pommel_style == "spike" else "pommel_center_y")};
@@ -303,9 +395,6 @@ pommel_top_y = pommel_center_y + pommel_size_mm/2;
 pommel_bottom_y = pommel_center_y - pommel_size_mm/2;
 effective_guard_width_mm = {("disk_guard_diameter_mm" if guard_style == "disk" else "guard_width_mm")};
 
-{make_blade(blade_style, fuller_enabled, ridge_enabled)}
-{make_guard(guard_style)}
-{make_grip()}
-{make_pommel(pommel_style)}
+{component_modules}
 {debug_module}
-{assemble_sword(guard_rotation, debug_geometry)}"""
+{assemble_sword(guard_rotation, debug_geometry, visible)}"""
