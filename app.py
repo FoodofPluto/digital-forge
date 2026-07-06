@@ -1,7 +1,10 @@
 """Streamlit user interface for Digital Forge."""
 
+import os
+
 import streamlit as st
 
+from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
 from geometry_audit import audit_geometry
 from preview_service import export_with_openscad
@@ -21,7 +24,25 @@ from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 st.set_page_config(page_title="Digital Forge", page_icon="DF", layout="wide")
 st.title("Digital Forge Version 4")
 st.caption("Design a dimensionally grounded decorative sword and export previewable OpenSCAD.")
-openscad_path = st.sidebar.text_input("OpenSCAD executable path", value="openscad")
+
+
+def persist_openscad_path() -> None:
+    save_openscad_path(st.session_state.openscad_path)
+
+
+saved_path = load_config().get("openscad_path", "")
+try:
+    fallback_path = st.secrets.get("OPENSCAD_PATH", "")
+except (FileNotFoundError, KeyError):
+    fallback_path = ""
+fallback_path = fallback_path or os.environ.get("OPENSCAD_PATH", "")
+if "openscad_path" not in st.session_state:
+    st.session_state.openscad_path = saved_path or fallback_path
+openscad_path = st.sidebar.text_input(
+    "OpenSCAD executable path", key="openscad_path", on_change=persist_openscad_path,
+    help="Only PNG preview and STL export require OpenSCAD. SCAD generation and download do not.",
+)
+st.sidebar.caption("The .scad file can always be generated and downloaded without OpenSCAD.")
 debug_geometry = st.sidebar.toggle(
     "Debug geometry",
     value=False,
@@ -126,7 +147,8 @@ with detail_col1:
     ridge_enabled = st.checkbox("Enable central ridge", value=False)
 with detail_col2:
     fuller_length_ratio = st.slider(
-        "Fuller length ratio", 0.25, 0.85, 0.65, 0.05, disabled=not fuller_enabled
+        "Fuller length ratio", 0.35, 0.90, 0.65, 0.05, disabled=not fuller_enabled,
+        help="Percentage of usable blade length; generation keeps ricasso and tip margins.",
     )
 with detail_col3:
     fuller_width_mm = st.number_input(

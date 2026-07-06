@@ -2,6 +2,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
 from geometry_audit import audit_geometry
 from preview_service import build_openscad_command, export_with_openscad
@@ -139,7 +140,7 @@ def test_fuller_is_a_bounded_subtractive_rounded_depression():
     )
     blade = scad.split("module blade()", 1)[1]
     assert "difference()" in blade and "fuller_geometry();" in blade
-    assert "Rounded capsule cutters" in scad and "hull()" in scad and "sphere(d=fuller_width_mm)" in scad
+    assert "Rounded capsule cutters" in scad and "hull()" in scad and "sphere(d=local_d)" in scad
     assert "face*prop_blade_thickness_mm/2" in scad
 
 
@@ -422,9 +423,19 @@ def test_asymmetrical_blades_accept_left_and_right_detail_offsets():
             fuller_enabled=True, ridge_enabled=True,
             fuller_offset_x=left, ridge_offset_x=right,
         )
-        assert f"fuller_offset_x = {left:g};" in scad
-        assert f"ridge_offset_x = {right:g};" in scad
-        assert "translate([fuller_offset_x, 0, face*prop_blade_thickness_mm/2])" in scad
+        safe_left = clamp_blade_detail_offset(
+            metrics["blade_base_width_mm"], left, 12,
+            metrics["blade_length_mm"], style,
+        )
+        safe_right = clamp_blade_detail_offset(
+            metrics["blade_base_width_mm"], right,
+            metrics["blade_base_width_mm"] * 0.14,
+            metrics["blade_length_mm"], style,
+        )
+        assert f"fuller_offset_x = {safe_left:g};" in scad
+        assert f"ridge_offset_x = {safe_right:g};" in scad
+        assert "function fuller_path_x(y)" in scad
+        assert "translate([fuller_path_x(y), y, face*prop_blade_thickness_mm/2])" in scad
         assert "translate([ridge_offset_x, 0])" in scad
 
 
@@ -434,8 +445,46 @@ def test_asymmetrical_detail_offsets_scale_and_stay_in_corridor():
         left = blade_detail_offset_for_position("Slight left", 50, 600, style)
         right = blade_detail_offset_for_position("Slight right", 50, 600, style)
         assert center - corridor / 2 <= left < center < right <= center + corridor / 2
+        assert right - left >= 50 * 0.1
         assert clamp_blade_detail_offset(50, -1000, 8, 600, style) >= center - corridor / 2
         assert clamp_blade_detail_offset(50, 1000, 8, 600, style) <= center + corridor / 2
+
+
+def test_curved_fuller_is_sampled_along_style_aware_centerline():
+    metrics = preset_metrics("longsword")
+    scad = generate_scad(
+        "longsword", metrics, "curved", "straight", "wheel", fuller_enabled=True
+    )
+    assert "fuller_samples = 18" in scad
+    assert "function fuller_center_x(y) = blade_base_width_mm*0.82*pow" in scad
+    assert "function fuller_diameter_at(y)" in scad
+    assert "for (sample=[0:fuller_samples-1])" in scad
+
+
+def test_fuller_length_defaults_and_clamps_to_safe_usable_range():
+    metrics = preset_metrics("longsword")
+    default_scad = generate_scad("longsword", metrics, "tapered", "straight", "wheel")
+    long_scad = generate_scad(
+        "longsword", metrics, "curved", "straight", "wheel",
+        fuller_enabled=True, fuller_length_ratio=99,
+    )
+    assert "fuller_length_ratio = 0.65;" in default_scad
+    _, expected_end = blade_detail_bounds(
+        metrics["blade_length_mm"], metrics["ricasso_length_mm"], 99, "curved"
+    )
+    assert f"blade_detail_end_y = {expected_end:g};" in long_scad
+    assert expected_end < metrics["blade_length_mm"]
+
+
+def test_openscad_path_config_round_trip_and_invalid_json():
+    path = Path("generated/test-digital-forge-config.json")
+    try:
+        save_openscad_path(r"C:\Program Files\OpenSCAD\openscad.exe", path)
+        assert load_config(path)["openscad_path"].endswith("openscad.exe")
+        path.write_text("not-json", encoding="utf-8")
+        assert load_config(path) == {}
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def test_tapered_and_leaf_center_positions_remain_centered():

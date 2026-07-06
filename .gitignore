@@ -5,3 +5,4 @@ generated/
 *.pyc
 *.stl
 *.png
+.digital_forge_config.json

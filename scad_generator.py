@@ -92,8 +92,7 @@ def blade_detail_bounds(
     ricasso = clamp(float(ricasso_length_mm), 0.0, blade_length * 0.8)
     body_length = max(1.0, blade_length - ricasso)
     start = min(blade_length, ricasso + max(2.0, body_length * 0.04))
-    ratio_cap = 0.48 if blade_style in {"curved", "falchion"} else 0.85
-    ratio = clamp(float(length_ratio), 0.15, ratio_cap)
+    ratio = clamp(float(length_ratio), 0.35, 0.90)
     tip_margin = max(3.0, body_length * 0.08)
     end = min(blade_length - tip_margin, start + body_length * ratio)
     return start, max(start, end)
@@ -106,9 +105,9 @@ def compute_blade_detail_corridor(
     width = max(1.0, float(blade_width_mm))
     length_factor = clamp(float(blade_length_mm) / (width * 8), 0.72, 1.0) if blade_length_mm else 1.0
     if blade_style == "curved":
-        return width * 0.06, width * 0.42 * length_factor
+        return 0.0, width * 0.42 * length_factor
     if blade_style == "falchion":
-        return width * 0.05, width * 0.46 * length_factor
+        return 0.0, width * 0.46 * length_factor
     if blade_style == "needle":
         return 0.0, width * 0.34 * length_factor
     return 0.0, width * 0.50 * length_factor
@@ -122,7 +121,7 @@ def blade_detail_offset_for_position(
     center, corridor_width = compute_blade_detail_corridor(
         blade_width_mm, blade_length_mm, blade_style
     )
-    offsets = {"Center": 0.0, "Slight left": -0.18, "Slight right": 0.18}
+    offsets = {"Center": 0.0, "Slight left": -0.32, "Slight right": 0.32}
     return center + corridor_width * offsets.get(position, 0.0)
 
 
@@ -294,20 +293,41 @@ def make_blade(blade_style: str, fuller_enabled: bool, ridge_enabled: bool) -> s
     fuller = ""
     fuller_call = ""
     if fuller_enabled:
-        fuller = """
+        if blade_style == "curved":
+            path_functions = """// Curved blade: quadratic sweep follows the midpoint between its edges.
+function fuller_center_x(y) = blade_base_width_mm*0.82*pow(y/blade_length_mm, 2);
+function fuller_local_half_width(y) = blade_base_width_mm*(0.50-0.48*(y/blade_length_mm));"""
+        elif blade_style == "falchion":
+            path_functions = """// Falchion: center follows the forward-heavy local blade corridor.
+function fuller_center_x(y) = let(t=y/blade_length_mm)
+    blade_base_width_mm*(t <= 0.66 ? 0.08*t : t <= 0.84 ? 0.0528-0.85*(t-0.66) : -0.1002+1.25*(t-0.84));
+function fuller_local_half_width(y) = let(t=y/blade_length_mm)
+    blade_base_width_mm*(t <= 0.66 ? 0.42+0.12*t : t <= 0.84 ? 0.499+1.0*(t-0.66) : 0.679-3.0*(t-0.84));"""
+        else:
+            path_functions = """// Symmetric profiles remain on their predictable centerline.
+function fuller_center_x(y) = 0;
+function fuller_local_half_width(y) = blade_base_width_mm*(0.50-0.32*(y/blade_length_mm));"""
+        fuller = "\n" + path_functions + """
+function fuller_path_x(y) = fuller_center_x(y)
+    + fuller_offset_ratio*2*fuller_local_half_width(y);
+function fuller_diameter_at(y) = max(1, min(fuller_width_mm,
+    2*(fuller_local_half_width(y)-abs(fuller_path_x(y)-fuller_center_x(y)))-2));
 module fuller_geometry() {
-    channel_length = blade_detail_end_y-blade_detail_start_y;
-    // Rounded capsule cutters penetrate both faces to form a true shallow depression.
+    fuller_samples = 18;
+    // Rounded capsule cutters are sampled into segments along the local blade centerline. The profile
+    // intersection clips the cutter at both edges and the safe Y bounds.
     for (face=[-1, 1])
         intersection() {
             linear_extrude(height=prop_blade_thickness_mm*2, center=true) blade_profile_2d();
-            translate([fuller_offset_x, 0, face*prop_blade_thickness_mm/2])
-                hull()
-                    for (y=[blade_detail_start_y+fuller_width_mm/2,
-                            blade_detail_end_y-fuller_width_mm/2])
-                        translate([0, y, 0])
-                            scale([1, 1, fuller_depth_mm/(fuller_width_mm/2)])
-                                sphere(d=fuller_width_mm);
+            for (sample=[0:fuller_samples-1]) hull()
+                for (step=[0, 1])
+                    let(y=blade_detail_start_y+fuller_width_mm/2
+                        +(blade_detail_end_y-blade_detail_start_y-fuller_width_mm)
+                        *(sample+step)/fuller_samples,
+                        local_d=fuller_diameter_at(y))
+                        translate([fuller_path_x(y), y, face*prop_blade_thickness_mm/2])
+                            scale([1, 1, fuller_depth_mm/(local_d/2)])
+                                sphere(d=local_d);
         }
 }
 """
@@ -508,6 +528,7 @@ def generate_scad(
     resolved_fuller_offset = clamp_blade_detail_offset(
         blade_width, fuller_offset_x, resolved_fuller_width, blade_length, blade_style
     )
+    fuller_offset_ratio = resolved_fuller_offset / blade_width
     resolved_ridge_offset = clamp_blade_detail_offset(
         blade_width, ridge_offset_x, blade_width * 0.14, blade_length, blade_style
     )
@@ -526,6 +547,7 @@ def generate_scad(
         f"\nfuller_width_mm = {resolved_fuller_width:g};"
         f"\nfuller_depth_mm = {resolved_fuller_depth:g};"
         f"\nfuller_offset_x = {resolved_fuller_offset:g};"
+        f"\nfuller_offset_ratio = {fuller_offset_ratio:g};"
         f"\nridge_offset_x = {resolved_ridge_offset:g};"
         f"\n// Blade-local detail bounds exclude the guard/ricasso and blunt tip."
         f"\nblade_detail_start_y = {detail_start:g};"
