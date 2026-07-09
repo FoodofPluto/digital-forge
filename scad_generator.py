@@ -1,8 +1,28 @@
-"""Generate decorative OpenSCAD swords using one shared coordinate contract."""
+"""Generate decorative OpenSCAD fantasy prop geometry."""
 
 BLADE_STYLES = ("tapered", "leaf", "needle", "curved", "falchion")
 GUARD_STYLES = ("straight", "crescent", "downturned", "disk")
 POMMEL_STYLES = ("sphere", "wheel", "ring", "spike")
+ARMOR_TYPES = ("Bracer", "Pauldron")
+BRACER_STYLES = ("Knight", "Barbarian", "Elven")
+BRACER_DETAIL_OPTIONS = ("raised_trim", "rivets", "center_ridge", "spikes", "runes")
+DEFAULT_BRACER_METRICS = {
+    "bracer_length_mm": 180.0,
+    "wrist_width_mm": 70.0,
+    "forearm_width_mm": 100.0,
+    "bracer_thickness_mm": 4.0,
+    "bracer_arc_degrees": 145.0,
+}
+PAULDRON_STYLES = ("Knight", "Barbarian", "Elven")
+PAULDRON_DETAIL_OPTIONS = ("raised_trim", "rivets", "spikes", "runes")
+DEFAULT_PAULDRON_METRICS = {
+    "pauldron_width_mm": 160.0,
+    "pauldron_depth_mm": 120.0,
+    "pauldron_height_mm": 55.0,
+    "plate_count": 4.0,
+    "plate_overlap_mm": 14.0,
+    "pauldron_thickness_mm": 4.0,
+}
 COMPONENT_NAMES = ("blade", "tang", "guard", "grip", "pommel")
 FULL_COMPONENT_VISIBILITY = {name: True for name in COMPONENT_NAMES}
 VISIBILITY_PRESETS = {
@@ -35,6 +55,171 @@ def has_visible_components(visible_components: dict[str, bool] | None = None) ->
 def clamp(value: float, minimum: float, maximum: float) -> float:
     """Return value constrained to the inclusive range."""
     return max(minimum, min(value, maximum))
+
+
+def _finite_float(value: object, fallback: float) -> float:
+    """Return a finite float, falling back for non-numeric inputs."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if number == number and number not in (float("inf"), float("-inf")) else fallback
+
+
+def normalize_bracer_style(bracer_style: str = "Knight") -> str:
+    """Return a supported bracer style name."""
+    normalized = str(bracer_style or "Knight").strip().title()
+    return normalized if normalized in BRACER_STYLES else "Knight"
+
+
+def normalize_pauldron_style(pauldron_style: str = "Knight") -> str:
+    """Return a supported pauldron style name."""
+    normalized = str(pauldron_style or "Knight").strip().title()
+    return normalized if normalized in PAULDRON_STYLES else "Knight"
+
+
+def normalize_armor_type(armor_type: str = "Bracer") -> str:
+    """Return a supported armor type name."""
+    normalized = str(armor_type or "Bracer").strip().title()
+    return normalized if normalized in ARMOR_TYPES else "Bracer"
+
+
+def normalize_bracer_detail_options(
+    bracer_style: str = "Knight",
+    detail_options: dict[str, bool] | None = None,
+) -> dict[str, bool]:
+    """Return complete bracer detail flags with style-aware defaults."""
+    style = normalize_bracer_style(bracer_style)
+    defaults = {
+        "raised_trim": True,
+        "rivets": style == "Barbarian",
+        "center_ridge": style == "Knight",
+        "spikes": False,
+        "runes": style == "Elven",
+    }
+    if detail_options:
+        defaults.update({name: bool(detail_options[name]) for name in BRACER_DETAIL_OPTIONS if name in detail_options})
+    return defaults
+
+
+def normalize_pauldron_detail_options(
+    pauldron_style: str = "Knight",
+    detail_options: dict[str, bool] | None = None,
+) -> dict[str, bool]:
+    """Return complete pauldron detail flags with style-aware defaults."""
+    style = normalize_pauldron_style(pauldron_style)
+    defaults = {
+        "raised_trim": True,
+        "rivets": style == "Barbarian",
+        "spikes": style == "Barbarian",
+        "runes": style == "Elven",
+    }
+    if detail_options:
+        defaults.update({name: bool(detail_options[name]) for name in PAULDRON_DETAIL_OPTIONS if name in detail_options})
+    return defaults
+
+
+def resolve_bracer_metrics(metrics: dict[str, float] | None = None) -> tuple[dict[str, float], list[str]]:
+    """Clamp decorative bracer dimensions and report non-fatal warnings."""
+    source = dict(DEFAULT_BRACER_METRICS)
+    if metrics:
+        source.update(metrics)
+    warnings: list[str] = []
+
+    length = clamp(_finite_float(source.get("bracer_length_mm"), 180.0), 60.0, 420.0)
+    wrist = clamp(_finite_float(source.get("wrist_width_mm"), 70.0), 35.0, 180.0)
+    forearm = clamp(_finite_float(source.get("forearm_width_mm"), 100.0), 45.0, 240.0)
+    thickness = clamp(_finite_float(source.get("bracer_thickness_mm"), 4.0), 2.4, 12.0)
+    arc = clamp(_finite_float(source.get("bracer_arc_degrees"), 145.0), 80.0, 220.0)
+
+    requested = {
+        "bracer_length_mm": source.get("bracer_length_mm"),
+        "wrist_width_mm": source.get("wrist_width_mm"),
+        "forearm_width_mm": source.get("forearm_width_mm"),
+        "bracer_thickness_mm": source.get("bracer_thickness_mm"),
+        "bracer_arc_degrees": source.get("bracer_arc_degrees"),
+    }
+    resolved = {
+        "bracer_length_mm": length,
+        "wrist_width_mm": wrist,
+        "forearm_width_mm": forearm,
+        "bracer_thickness_mm": thickness,
+        "bracer_arc_degrees": arc,
+    }
+    for name, value in resolved.items():
+        if _finite_float(requested[name], DEFAULT_BRACER_METRICS[name]) != value:
+            warnings.append(f"{name} was clamped to {value:g}.")
+
+    if wrist > forearm:
+        warnings.append("wrist_width_mm was clamped to forearm_width_mm so the bracer tapers outward.")
+        wrist = forearm
+        resolved["wrist_width_mm"] = wrist
+
+    trim_width = clamp(length * 0.075, 6.0, 18.0)
+    panel_length = max(12.0, length - trim_width * 3.4)
+    resolved.update(
+        bracer_trim_width_mm=trim_width,
+        bracer_panel_length_mm=panel_length,
+        bracer_panel_width_mm=clamp(min(wrist, forearm) * 0.34, 14.0, 48.0),
+        bracer_rivet_diameter_mm=clamp(thickness * 1.45, 3.2, 10.0),
+    )
+    return resolved, warnings
+
+
+def resolve_pauldron_metrics(metrics: dict[str, float] | None = None) -> tuple[dict[str, float], list[str]]:
+    """Clamp decorative pauldron dimensions and report non-fatal warnings."""
+    source = dict(DEFAULT_PAULDRON_METRICS)
+    if metrics:
+        source.update(metrics)
+    warnings: list[str] = []
+
+    width = clamp(_finite_float(source.get("pauldron_width_mm"), 160.0), 70.0, 320.0)
+    depth = clamp(_finite_float(source.get("pauldron_depth_mm"), 120.0), 55.0, 260.0)
+    height = clamp(_finite_float(source.get("pauldron_height_mm"), 55.0), 18.0, 130.0)
+    plate_count = int(clamp(round(_finite_float(source.get("plate_count"), 4.0)), 2.0, 8.0))
+    overlap = clamp(_finite_float(source.get("plate_overlap_mm"), 14.0), 4.0, 45.0)
+    thickness = clamp(_finite_float(source.get("pauldron_thickness_mm"), 4.0), 2.4, 12.0)
+
+    requested = {
+        "pauldron_width_mm": source.get("pauldron_width_mm"),
+        "pauldron_depth_mm": source.get("pauldron_depth_mm"),
+        "pauldron_height_mm": source.get("pauldron_height_mm"),
+        "plate_count": source.get("plate_count"),
+        "plate_overlap_mm": source.get("plate_overlap_mm"),
+        "pauldron_thickness_mm": source.get("pauldron_thickness_mm"),
+    }
+    resolved = {
+        "pauldron_width_mm": width,
+        "pauldron_depth_mm": depth,
+        "pauldron_height_mm": height,
+        "plate_count": plate_count,
+        "plate_overlap_mm": overlap,
+        "pauldron_thickness_mm": thickness,
+    }
+    for name, value in resolved.items():
+        fallback = DEFAULT_PAULDRON_METRICS[name]
+        requested_value = round(_finite_float(requested[name], fallback)) if name == "plate_count" else _finite_float(requested[name], fallback)
+        if requested_value != value:
+            warnings.append(f"{name} was clamped to {value:g}.")
+
+    plate_depth = (depth + overlap * (plate_count - 1)) / plate_count
+    min_overlap = max(4.0, thickness * 1.4)
+    if overlap >= plate_depth * 0.72:
+        overlap = plate_depth * 0.55
+        resolved["plate_overlap_mm"] = overlap
+        warnings.append(f"plate_overlap_mm was reduced to {overlap:g} so layered plates remain readable.")
+    elif overlap < min_overlap:
+        overlap = min_overlap
+        resolved["plate_overlap_mm"] = overlap
+        warnings.append(f"plate_overlap_mm was increased to {overlap:g} so plates visually connect.")
+    plate_depth = (depth + overlap * (plate_count - 1)) / plate_count
+    resolved.update(
+        pauldron_plate_depth_mm=plate_depth,
+        pauldron_plate_step_mm=max(1.0, plate_depth - overlap),
+        pauldron_rivet_diameter_mm=clamp(thickness * 1.55, 3.2, 11.0),
+        pauldron_spike_height_mm=clamp(thickness * 3.2, 8.0, min(32.0, height * 0.45)),
+    )
+    return resolved, warnings
 
 
 def disk_guard_diameter(metrics: dict[str, float]) -> float:
@@ -467,6 +652,373 @@ module debug_markers() {{
     debug_anchor(pommel_center_y, "magenta");
 {bounds}}}
 """
+
+
+def _bracer_style_geometry(style: str) -> str:
+    """Return style-specific decorative bracer features."""
+    if style == "Barbarian":
+        return """// Barbarian style: heavier side ribs and oversized raised rivets.
+    bracer_plate_patch(bracer_length_mm/2, bracer_panel_length_mm*0.72,
+        bracer_panel_width_mm*1.12, bracer_thickness_mm*0.44);
+    for (side=[-1, 1])
+        for (y=[bracer_trim_width_mm*1.6, bracer_length_mm/2, bracer_length_mm-bracer_trim_width_mm*1.6])
+            bracer_surface_detail(side*bracer_panel_width_mm*0.95, y, bracer_rivet_diameter_mm,
+                bracer_rivet_diameter_mm*0.45);
+    for (side=[-1, 1])
+        bracer_long_bar(side*bracer_panel_width_mm*0.55, bracer_length_mm/2,
+            bracer_panel_length_mm*0.78, bracer_thickness_mm*0.95, bracer_thickness_mm*0.55);"""
+    if style == "Elven":
+        return """// Elven style: slim leaf-like raised center motif.
+    bracer_plate_patch(bracer_length_mm/2, bracer_panel_length_mm*0.80,
+        bracer_panel_width_mm*0.72, bracer_thickness_mm*0.30);
+    hull() {
+        bracer_surface_detail(0, bracer_length_mm*0.20, bracer_thickness_mm*1.2, bracer_thickness_mm*0.42);
+        bracer_surface_detail(-bracer_panel_width_mm*0.42, bracer_length_mm*0.50,
+            bracer_thickness_mm*1.1, bracer_thickness_mm*0.35);
+        bracer_surface_detail(0, bracer_length_mm*0.82, bracer_thickness_mm*1.0, bracer_thickness_mm*0.35);
+    }
+    hull() {
+        bracer_surface_detail(0, bracer_length_mm*0.20, bracer_thickness_mm*1.2, bracer_thickness_mm*0.42);
+        bracer_surface_detail(bracer_panel_width_mm*0.42, bracer_length_mm*0.50,
+            bracer_thickness_mm*1.1, bracer_thickness_mm*0.35);
+        bracer_surface_detail(0, bracer_length_mm*0.82, bracer_thickness_mm*1.0, bracer_thickness_mm*0.35);
+    }"""
+    return """// Knight style: clean raised center plate and crisp central ridge.
+    bracer_plate_patch(bracer_length_mm/2, bracer_panel_length_mm,
+        bracer_panel_width_mm, bracer_thickness_mm*0.40);
+    bracer_long_bar(0, bracer_length_mm/2, bracer_panel_length_mm*0.92,
+        bracer_thickness_mm*1.05, bracer_thickness_mm*1.05);"""
+
+
+def _bracer_detail_geometry(detail_options: dict[str, bool]) -> str:
+    """Return optional detail geometry selected by UI flags."""
+    details: list[str] = []
+    if detail_options["center_ridge"]:
+        details.append("""// Optional center ridge detail.
+        bracer_long_bar(0, bracer_length_mm/2, bracer_panel_length_mm*0.88,
+            bracer_thickness_mm*0.95, bracer_thickness_mm*0.95);""")
+    if detail_options["rivets"]:
+        details.append("""// Optional rivet detail.
+        for (side=[-1, 1])
+            for (y=[bracer_trim_width_mm*1.7, bracer_length_mm*0.38,
+                    bracer_length_mm*0.62, bracer_length_mm-bracer_trim_width_mm*1.7])
+                bracer_surface_detail(side*bracer_panel_width_mm*1.18, y,
+                    bracer_rivet_diameter_mm, bracer_rivet_diameter_mm*0.38);""")
+    if detail_options["spikes"]:
+        details.append("""// Optional blunt fantasy spike detail.
+        for (y=[bracer_length_mm*0.34, bracer_length_mm*0.5, bracer_length_mm*0.66])
+            translate([0, y, bracer_surface_z(0, y)+bracer_thickness_mm/2])
+                cylinder(h=bracer_thickness_mm*2.2,
+                    r1=bracer_thickness_mm*0.85, r2=bracer_thickness_mm*0.22);""")
+    if detail_options["runes"]:
+        details.append("""// Optional raised rune-like decorative motif.
+        for (index=[-1, 0, 1])
+            translate([index*bracer_panel_width_mm*0.32, bracer_length_mm*0.52,
+                    bracer_surface_z(index*bracer_panel_width_mm*0.32, bracer_length_mm*0.52)
+                    + bracer_thickness_mm/2])
+                rotate([0, 0, 45-index*18])
+                    cube([bracer_thickness_mm*0.55, bracer_panel_width_mm*0.62,
+                        bracer_thickness_mm*0.42], center=true);""")
+    return "\n".join(details) if details else "// No optional bracer details selected."
+
+
+def make_bracer(bracer_style: str, detail_options: dict[str, bool] | None = None) -> str:
+    """Return tapered decorative bracer modules rooted from wrist Y=0 to forearm +Y."""
+    style = normalize_bracer_style(bracer_style)
+    details = normalize_bracer_detail_options(style, detail_options)
+    trim_calls = (
+        """bracer_trim_band(bracer_trim_width_mm/2);
+        bracer_trim_band(bracer_length_mm-bracer_trim_width_mm/2);"""
+        if details["raised_trim"] else "// Raised trim disabled."
+    )
+    return f"""function bracer_width_at(y) = wrist_width_mm
+    + (forearm_width_mm-wrist_width_mm) * y / bracer_length_mm;
+function bracer_radius_at(y) = max(1, (bracer_width_at(y)/2)
+    / sin(bracer_arc_degrees/2));
+function bracer_surface_z(x, y) = let(width=bracer_width_at(y),
+    radius=bracer_radius_at(y),
+    limited_x=max(-width*0.49, min(width*0.49, x)))
+    sqrt(max(0, radius*radius-limited_x*limited_x))
+    - radius*cos(bracer_arc_degrees/2);
+
+module bracer_surface_detail(x, y, diameter, height) {{
+    translate([x, y, bracer_surface_z(x, y)+bracer_thickness_mm/2])
+        scale([1, 1, max(0.18, height/max(0.1, diameter))])
+            sphere(d=diameter);
+}}
+
+module bracer_long_bar(x, center_y, length, width, height) {{
+    hull() {{
+        for (end=[-1, 1])
+            bracer_surface_detail(x, center_y+end*length/2, width, height);
+    }}
+}}
+
+module bracer_plate_patch(center_y, length, width, height) {{
+    // Surface-following patch used for end bands and raised center plates.
+    hull() {{
+        for (side=[-1, 1])
+            for (end=[-1, 1])
+                bracer_surface_detail(side*width/2, center_y+end*length/2,
+                    bracer_thickness_mm*1.35, height);
+    }}
+}}
+
+module bracer_shell() {{
+    // Tapered curved shell: wrist at Y=0, forearm at +Y.
+    hull() {{
+        for (y=[0, bracer_length_mm])
+            for (angle=[-bracer_arc_degrees/2:bracer_arc_degrees/8:bracer_arc_degrees/2])
+                let(radius=bracer_radius_at(y),
+                    x=radius*sin(angle),
+                    z=radius*cos(angle)-radius*cos(bracer_arc_degrees/2))
+                    translate([x, y, z]) sphere(d=bracer_thickness_mm);
+    }}
+}}
+
+module bracer_trim_band(y) {{
+    // Raised end trim bands reinforce the wrist and forearm ends visually.
+    bracer_plate_patch(y, bracer_trim_width_mm,
+        bracer_width_at(y)*0.86, bracer_thickness_mm*0.58);
+}}
+
+module bracer_outer_plate() {{
+    {_bracer_style_geometry(style)}
+    {_bracer_detail_geometry(details)}
+}}
+
+module bracer() {{
+    color("gainsboro") union() {{
+        bracer_shell();
+        {trim_calls}
+        bracer_outer_plate();
+    }}
+}}
+"""
+
+
+def generate_armor_scad(
+    armor_type: str = "Bracer",
+    metrics: dict[str, float] | None = None,
+    bracer_style: str = "Knight",
+    pauldron_style: str = "Knight",
+    detail_options: dict[str, bool] | None = None,
+    debug_geometry: bool = False,
+) -> str:
+    """Build a decorative OpenSCAD armor prop program."""
+    resolved_type = normalize_armor_type(armor_type)
+    if resolved_type == "Pauldron":
+        return generate_pauldron_scad(
+            metrics=metrics,
+            pauldron_style=pauldron_style,
+            detail_options=detail_options,
+            debug_geometry=debug_geometry,
+        )
+    style = normalize_bracer_style(bracer_style)
+    details = normalize_bracer_detail_options(style, detail_options)
+    values, warnings = resolve_bracer_metrics(metrics)
+    assignments = "\n".join(f"{name} = {value:g};" for name, value in values.items())
+    detail_text = ", ".join(name for name, enabled in details.items() if enabled) or "none"
+    warning_text = "\n".join(f"// Warning: {warning}" for warning in warnings)
+    debug_call = """
+// DEBUG GEOMETRY ENABLED
+color([0.2, 0.6, 1.0, 0.16])
+    translate([0, bracer_length_mm/2, bracer_thickness_mm])
+        cube([forearm_width_mm, bracer_length_mm, bracer_thickness_mm], center=true);
+""" if debug_geometry else ""
+    return f"""// Digital Forge Armor Version 1: {resolved_type}
+// Armor type: {resolved_type}
+// Bracer style: {style}
+// Bracer details: {detail_text}
+// Decorative/prototype fantasy prop geometry only; not wearable protective equipment.
+// Coordinate contract:
+// - The wrist end starts at Y=0 and the forearm end extends toward +Y.
+// - Width tapers from wrist_width_mm to forearm_width_mm.
+// - Curvature is controlled by bracer_arc_degrees.
+$fn = 48;
+{assignments}
+{warning_text}
+
+{make_bracer(style, details)}
+bracer();
+{debug_call}"""
+
+
+def _pauldron_style_geometry(style: str) -> str:
+    """Return style-specific decorative pauldron features."""
+    if style == "Barbarian":
+        return """// Barbarian style: heavy center rib, rivets, and rugged shoulder mass.
+    pauldron_center_rib(pauldron_thickness_mm*1.3, pauldron_thickness_mm*0.9);
+    for (side=[-1, 1])
+        pauldron_side_rib(side, pauldron_thickness_mm*1.05);"""
+    if style == "Elven":
+        return """// Elven style: slimmer leaf-like crest following the plate stack.
+    pauldron_leaf_crest(pauldron_thickness_mm*0.75);
+    for (side=[-1, 1])
+        pauldron_surface_detail(side*pauldron_width_mm*0.18,
+            pauldron_depth_mm*0.42, pauldron_thickness_mm*1.2,
+            pauldron_thickness_mm*0.32);"""
+    return """// Knight style: clean layered shoulder plates with a central raised trim.
+    pauldron_center_rib(pauldron_thickness_mm*0.95, pauldron_thickness_mm*0.65);"""
+
+
+def _pauldron_detail_geometry(detail_options: dict[str, bool]) -> str:
+    """Return optional pauldron detail geometry selected by UI flags."""
+    details: list[str] = []
+    if detail_options["raised_trim"]:
+        details.append("""// Optional raised trim on each layered plate.
+        for (i=[0:plate_count-1])
+            pauldron_plate_trim(i);""")
+    if detail_options["rivets"]:
+        details.append("""// Optional rivets anchored near plate corners.
+        for (i=[0:plate_count-1])
+            for (side=[-1, 1])
+                pauldron_surface_detail(side*pauldron_width_at(i)*0.36,
+                    pauldron_plate_center_y(i), pauldron_rivet_diameter_mm,
+                    pauldron_rivet_diameter_mm*0.38);""")
+    if detail_options["spikes"]:
+        details.append("""// Optional blunt fantasy shoulder spikes.
+        for (x=[-pauldron_width_mm*0.22, 0, pauldron_width_mm*0.22])
+            translate([x, pauldron_depth_mm*0.28,
+                    pauldron_surface_z(x, pauldron_depth_mm*0.28)+pauldron_thickness_mm/2])
+                cylinder(h=pauldron_spike_height_mm,
+                    r1=pauldron_thickness_mm*0.95, r2=pauldron_thickness_mm*0.28);""")
+    if detail_options["runes"]:
+        details.append("""// Optional raised rune-like decorative motif.
+        for (index=[-1, 0, 1])
+            translate([index*pauldron_width_mm*0.11, pauldron_depth_mm*0.38,
+                    pauldron_surface_z(index*pauldron_width_mm*0.11, pauldron_depth_mm*0.38)
+                    + pauldron_thickness_mm/2])
+                rotate([0, 0, 35-index*22])
+                    cube([pauldron_thickness_mm*0.55, pauldron_width_mm*0.13,
+                        pauldron_thickness_mm*0.42], center=true);""")
+    return "\n".join(details) if details else "// No optional pauldron details selected."
+
+
+def make_pauldron(pauldron_style: str, detail_options: dict[str, bool] | None = None) -> str:
+    """Return layered decorative pauldron modules rooted at the neck-side plate."""
+    style = normalize_pauldron_style(pauldron_style)
+    details = normalize_pauldron_detail_options(style, detail_options)
+    return f"""function pauldron_width_at(i) = pauldron_width_mm
+    * (1 - 0.18 * i / max(1, plate_count-1));
+function pauldron_plate_center_y(i) = i * pauldron_plate_step_mm;
+function pauldron_surface_z(x, y) = let(
+    nx=min(1, abs(x)/(pauldron_width_mm/2)),
+    ny=min(1, y/max(1, pauldron_depth_mm)))
+    pauldron_height_mm * max(0.18, (1-nx*nx)*0.72 + (1-ny)*0.28);
+
+module pauldron_surface_detail(x, y, diameter, height) {{
+    translate([x, y, pauldron_surface_z(x, y)+pauldron_thickness_mm/2])
+        scale([1, 1, max(0.18, height/max(0.1, diameter))])
+            sphere(d=diameter);
+}}
+
+module pauldron_plate(i) {{
+    // Layered shoulder lames overlap along +Y from neck side toward upper arm.
+    hull() {{
+        for (side=[-1, 1])
+            for (end=[-1, 1])
+                let(x=side*pauldron_width_at(i)/2,
+                    y=pauldron_plate_center_y(i)+end*pauldron_plate_depth_mm/2)
+                    pauldron_surface_detail(x, y, pauldron_thickness_mm*1.55,
+                        pauldron_thickness_mm*0.55);
+    }}
+}}
+
+module pauldron_plate_trim(i) {{
+    hull() {{
+        for (side=[-1, 1])
+            let(x=side*pauldron_width_at(i)*0.42,
+                y=pauldron_plate_center_y(i)-pauldron_plate_depth_mm*0.32)
+                pauldron_surface_detail(x, y, pauldron_thickness_mm*1.1,
+                    pauldron_thickness_mm*0.42);
+    }}
+}}
+
+module pauldron_center_rib(width, height) {{
+    hull() {{
+        for (y=[0, pauldron_depth_mm*0.92])
+            pauldron_surface_detail(0, y, width, height);
+    }}
+}}
+
+module pauldron_side_rib(side, height) {{
+    hull() {{
+        for (y=[pauldron_depth_mm*0.16, pauldron_depth_mm*0.82])
+            pauldron_surface_detail(side*pauldron_width_mm*0.34, y,
+                pauldron_thickness_mm*1.2, height);
+    }}
+}}
+
+module pauldron_leaf_crest(height) {{
+    hull() {{
+        pauldron_surface_detail(0, pauldron_depth_mm*0.08,
+            pauldron_thickness_mm*1.25, height);
+        pauldron_surface_detail(-pauldron_width_mm*0.20, pauldron_depth_mm*0.46,
+            pauldron_thickness_mm*1.05, height*0.82);
+        pauldron_surface_detail(0, pauldron_depth_mm*0.88,
+            pauldron_thickness_mm*0.95, height*0.72);
+    }}
+    hull() {{
+        pauldron_surface_detail(0, pauldron_depth_mm*0.08,
+            pauldron_thickness_mm*1.25, height);
+        pauldron_surface_detail(pauldron_width_mm*0.20, pauldron_depth_mm*0.46,
+            pauldron_thickness_mm*1.05, height*0.82);
+        pauldron_surface_detail(0, pauldron_depth_mm*0.88,
+            pauldron_thickness_mm*0.95, height*0.72);
+    }}
+}}
+
+module pauldron_style_details() {{
+    {_pauldron_style_geometry(style)}
+    {_pauldron_detail_geometry(details)}
+}}
+
+module pauldron() {{
+    color("gainsboro") union() {{
+        for (i=[0:plate_count-1])
+            pauldron_plate(i);
+        pauldron_style_details();
+    }}
+}}
+"""
+
+
+def generate_pauldron_scad(
+    metrics: dict[str, float] | None = None,
+    pauldron_style: str = "Knight",
+    detail_options: dict[str, bool] | None = None,
+    debug_geometry: bool = False,
+) -> str:
+    """Build a decorative OpenSCAD pauldron prop program."""
+    style = normalize_pauldron_style(pauldron_style)
+    details = normalize_pauldron_detail_options(style, detail_options)
+    values, warnings = resolve_pauldron_metrics(metrics)
+    assignments = "\n".join(f"{name} = {value:g};" for name, value in values.items())
+    detail_text = ", ".join(name for name, enabled in details.items() if enabled) or "none"
+    warning_text = "\n".join(f"// Warning: {warning}" for warning in warnings)
+    debug_call = """
+// DEBUG GEOMETRY ENABLED
+color([0.2, 0.6, 1.0, 0.16])
+    translate([0, pauldron_depth_mm/2, pauldron_height_mm/2])
+        cube([pauldron_width_mm, pauldron_depth_mm, pauldron_height_mm], center=true);
+""" if debug_geometry else ""
+    return f"""// Digital Forge Armor Version 1: Pauldron
+// Armor type: Pauldron
+// Pauldron style: {style}
+// Pauldron details: {detail_text}
+// Decorative/prototype fantasy prop geometry only; not wearable protective equipment.
+// Coordinate contract:
+// - The shoulder cap is centered on X=0.
+// - Layered plates progress along +Y from neck side toward upper arm.
+// - Height rises along +Z to form a shoulder dome.
+$fn = 48;
+{assignments}
+{warning_text}
+
+{make_pauldron(style, details)}
+pauldron();
+{debug_call}"""
 
 
 def assemble_sword(

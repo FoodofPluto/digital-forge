@@ -4,11 +4,14 @@ from unittest.mock import patch
 
 from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
-from geometry_audit import audit_geometry
+from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry
 from preview_service import build_openscad_command, export_with_openscad
 from realism_rules import check_realism
 from scad_generator import (
+    ARMOR_TYPES,
     BLADE_STYLES,
+    BRACER_STYLES,
+    PAULDRON_STYLES,
     GUARD_STYLES,
     VISIBILITY_PRESETS,
     blade_detail_bounds,
@@ -17,14 +20,27 @@ from scad_generator import (
     compute_blade_detail_corridor,
     centered_peg_hole_positions,
     disk_guard_diameter,
+    generate_armor_scad,
+    generate_pauldron_scad,
     generate_scad,
     get_guard_rotation,
     has_visible_components,
+    resolve_bracer_metrics,
+    resolve_pauldron_metrics,
     resolve_tang_details,
     resolve_fuller_dimensions,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from showcase_presets import SHOWCASE_PRESETS, generate_showcase_scad, preset_metrics as showcase_metrics
+from ui_params import (
+    DEFAULT_GENERATION_CATEGORY,
+    GENERATION_CATEGORIES,
+    build_bracer_generation_params,
+    build_pauldron_generation_params,
+    enabled_bracer_detail_labels,
+    enabled_pauldron_detail_labels,
+    normalize_generation_category,
+)
 
 
 def preset_metrics(sword_type: str) -> dict[str, float]:
@@ -81,6 +97,396 @@ def test_scad_contains_selection_and_metrics():
     assert "Guard style: disk" in scad
     assert "blade_length_mm = 1050;" in scad
     assert "grip_length_mm = 120;" in scad
+
+
+def test_generate_scad_backward_compatible_sword_default():
+    scad = generate_scad("longsword", preset_metrics("longsword"), "tapered", "straight", "sphere")
+    assert "Digital Forge Version 4: longsword" in scad
+    assert "module blade()" in scad
+    assert "module bracer()" not in scad
+
+
+def test_bracer_generation_returns_valid_scad_text():
+    assert ARMOR_TYPES == ("Bracer", "Pauldron")
+    scad = generate_armor_scad(
+        armor_type="Bracer",
+        metrics={
+            "bracer_length_mm": 190,
+            "wrist_width_mm": 72,
+            "forearm_width_mm": 108,
+            "bracer_thickness_mm": 4.5,
+            "bracer_arc_degrees": 150,
+        },
+        bracer_style="Knight",
+    )
+    assert "Digital Forge Armor Version 1: Bracer" in scad
+    assert "Decorative/prototype fantasy prop geometry only" in scad
+    assert "bracer_length_mm = 190;" in scad
+    assert "wrist_width_mm = 72;" in scad and "forearm_width_mm = 108;" in scad
+    assert "function bracer_width_at(y)" in scad
+    assert "module bracer_shell()" in scad
+    assert "module bracer_trim_band" in scad
+    assert "module bracer_outer_plate()" in scad
+    assert "bracer();" in scad
+
+
+def test_pauldron_generation_returns_valid_scad_text():
+    scad = generate_armor_scad(
+        armor_type="Pauldron",
+        metrics={
+            "pauldron_width_mm": 170,
+            "pauldron_depth_mm": 125,
+            "pauldron_height_mm": 58,
+            "plate_count": 4,
+            "plate_overlap_mm": 15,
+            "pauldron_thickness_mm": 4.5,
+        },
+        pauldron_style="Knight",
+    )
+    assert "Digital Forge Armor Version 1: Pauldron" in scad
+    assert "Pauldron style: Knight" in scad
+    assert "pauldron_width_mm = 170;" in scad
+    assert "plate_count = 4;" in scad
+    assert "module pauldron_plate(i)" in scad
+    assert "module pauldron()" in scad
+    assert "pauldron();" in scad
+    assert "Layered shoulder lames overlap" in scad
+
+
+def test_direct_pauldron_generator_matches_armor_route():
+    direct = generate_pauldron_scad(pauldron_style="Elven")
+    routed = generate_armor_scad(armor_type="Pauldron", pauldron_style="Elven")
+    assert direct == routed
+    assert "Elven style: slimmer leaf-like crest" in direct
+
+
+def test_bracer_detail_options_control_optional_scad_features():
+    scad = generate_armor_scad(
+        bracer_style="Knight",
+        detail_options={
+            "raised_trim": False,
+            "rivets": True,
+            "center_ridge": False,
+            "spikes": True,
+            "runes": True,
+        },
+    )
+    assert "Bracer details: rivets, spikes, runes" in scad
+    assert "Raised trim disabled" in scad
+    assert "Optional rivet detail" in scad
+    assert "Optional blunt fantasy spike detail" in scad
+    assert "Optional raised rune-like decorative motif" in scad
+
+
+def test_pauldron_detail_options_control_optional_scad_features():
+    scad = generate_armor_scad(
+        armor_type="Pauldron",
+        pauldron_style="Barbarian",
+        detail_options={
+            "raised_trim": False,
+            "rivets": True,
+            "spikes": True,
+            "runes": True,
+        },
+    )
+    assert "Pauldron details: rivets, spikes, runes" in scad
+    assert "Optional rivets anchored near plate corners" in scad
+    assert "Optional blunt fantasy shoulder spikes" in scad
+    assert "Optional raised rune-like decorative motif" in scad
+
+
+def test_each_bracer_style_emits_style_specific_features():
+    outputs = {style: generate_armor_scad(bracer_style=style) for style in BRACER_STYLES}
+    assert "Knight style: clean raised center plate" in outputs["Knight"]
+    assert "Barbarian style: heavier side ribs" in outputs["Barbarian"]
+    assert "bracer_rivet_diameter_mm" in outputs["Barbarian"]
+    assert "Elven style: slim leaf-like raised center motif" in outputs["Elven"]
+    assert "bracer_plate_patch" in outputs["Knight"]
+    assert len(set(outputs.values())) == len(BRACER_STYLES)
+
+
+def test_each_pauldron_style_emits_style_specific_features():
+    outputs = {
+        style: generate_armor_scad(armor_type="Pauldron", pauldron_style=style)
+        for style in PAULDRON_STYLES
+    }
+    assert "Knight style: clean layered shoulder plates" in outputs["Knight"]
+    assert "Barbarian style: heavy center rib" in outputs["Barbarian"]
+    assert "Elven style: slimmer leaf-like crest" in outputs["Elven"]
+    assert len(set(outputs.values())) == len(PAULDRON_STYLES)
+
+
+def test_invalid_bracer_dimensions_are_clamped_safely():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "bracer_length_mm": -100,
+            "wrist_width_mm": 220,
+            "forearm_width_mm": 40,
+            "bracer_thickness_mm": 0.1,
+            "bracer_arc_degrees": 999,
+        }
+    )
+    assert metrics["bracer_length_mm"] == 60
+    assert metrics["forearm_width_mm"] == 45
+    assert metrics["wrist_width_mm"] == metrics["forearm_width_mm"]
+    assert metrics["bracer_thickness_mm"] == 2.4
+    assert metrics["bracer_arc_degrees"] == 220
+    assert warnings
+    scad = generate_armor_scad(metrics={
+        "bracer_length_mm": -100,
+        "wrist_width_mm": 220,
+        "forearm_width_mm": 40,
+        "bracer_thickness_mm": 0.1,
+        "bracer_arc_degrees": 999,
+    })
+    assert "bracer_length_mm = 60;" in scad
+    assert "wrist_width_mm = 45;" in scad
+    assert "bracer_thickness_mm = 2.4;" in scad
+    assert "Warning:" in scad
+
+
+def test_invalid_pauldron_dimensions_are_clamped_safely():
+    metrics, warnings = resolve_pauldron_metrics(
+        {
+            "pauldron_width_mm": -10,
+            "pauldron_depth_mm": 999,
+            "pauldron_height_mm": 2,
+            "plate_count": 99,
+            "plate_overlap_mm": 1,
+            "pauldron_thickness_mm": 0.1,
+        }
+    )
+    assert metrics["pauldron_width_mm"] == 70
+    assert metrics["pauldron_depth_mm"] == 260
+    assert metrics["pauldron_height_mm"] == 18
+    assert metrics["plate_count"] == 8
+    assert metrics["pauldron_thickness_mm"] == 2.4
+    assert metrics["plate_overlap_mm"] >= 4
+    assert warnings
+    scad = generate_armor_scad(armor_type="Pauldron", metrics={
+        "pauldron_width_mm": -10,
+        "pauldron_depth_mm": 999,
+        "pauldron_height_mm": 2,
+        "plate_count": 99,
+        "plate_overlap_mm": 1,
+        "pauldron_thickness_mm": 0.1,
+    })
+    assert "pauldron_width_mm = 70;" in scad
+    assert "plate_count = 8;" in scad
+    assert "Warning:" in scad
+
+
+def test_ui_generation_category_defaults_to_sword():
+    assert GENERATION_CATEGORIES == ("Sword", "Armor")
+    assert DEFAULT_GENERATION_CATEGORY == "Sword"
+    assert normalize_generation_category(None) == "Sword"
+    assert normalize_generation_category("unknown") == "Sword"
+    assert normalize_generation_category("armor") == "Armor"
+
+
+def test_ui_armor_params_build_valid_bracer_kwargs():
+    params, warnings = build_bracer_generation_params(
+        armor_type="Bracer",
+        bracer_style="Elven",
+        metrics={
+            "bracer_length_mm": 210,
+            "wrist_width_mm": 74,
+            "forearm_width_mm": 112,
+            "bracer_thickness_mm": 5,
+            "bracer_arc_degrees": 155,
+        },
+        detail_options={
+            "raised_trim": True,
+            "rivets": False,
+            "center_ridge": False,
+            "spikes": False,
+            "runes": True,
+        },
+    )
+    assert not warnings
+    assert params["armor_type"] == "Bracer"
+    assert params["bracer_style"] == "Elven"
+    assert params["metrics"]["bracer_length_mm"] == 210
+    assert params["detail_options"]["runes"] is True
+    assert enabled_bracer_detail_labels(params["detail_options"]) == ["Raised trim", "Runes / motif"]
+    scad = generate_armor_scad(**params)
+    assert "Digital Forge Armor Version 1: Bracer" in scad
+    assert "Bracer style: Elven" in scad
+
+
+def test_ui_armor_params_build_valid_pauldron_kwargs():
+    params, warnings = build_pauldron_generation_params(
+        armor_type="Pauldron",
+        pauldron_style="Barbarian",
+        metrics={
+            "pauldron_width_mm": 180,
+            "pauldron_depth_mm": 128,
+            "pauldron_height_mm": 62,
+            "plate_count": 5,
+            "plate_overlap_mm": 16,
+            "pauldron_thickness_mm": 5,
+        },
+        detail_options={
+            "raised_trim": True,
+            "rivets": True,
+            "spikes": True,
+            "runes": False,
+        },
+    )
+    assert not warnings
+    assert params["armor_type"] == "Pauldron"
+    assert params["pauldron_style"] == "Barbarian"
+    assert params["metrics"]["plate_count"] == 5
+    assert enabled_pauldron_detail_labels(params["detail_options"]) == ["Raised trim", "Rivets", "Spikes"]
+    scad = generate_armor_scad(**params)
+    assert "Digital Forge Armor Version 1: Pauldron" in scad
+    assert "Pauldron style: Barbarian" in scad
+
+
+def test_valid_bracer_audit_has_no_warnings():
+    audit = audit_bracer_geometry(
+        {
+            "bracer_length_mm": 185,
+            "wrist_width_mm": 72,
+            "forearm_width_mm": 104,
+            "bracer_thickness_mm": 4.2,
+            "bracer_arc_degrees": 145,
+        },
+        bracer_style="Knight",
+        detail_options={"raised_trim": True, "center_ridge": True},
+    )
+    assert not audit["warnings"]
+    combined = " ".join(audit["passes"])
+    assert "tapers outward" in combined
+    assert "Raised center panel fits" in combined
+    assert "Knight style" in combined
+
+
+def test_thin_bracer_audit_warns():
+    audit = audit_bracer_geometry(
+        {
+            "bracer_length_mm": 180,
+            "wrist_width_mm": 70,
+            "forearm_width_mm": 100,
+            "bracer_thickness_mm": 2.4,
+            "bracer_arc_degrees": 145,
+        }
+    )
+    assert any("thickness" in warning and "fragile" in warning for warning in audit["warnings"])
+
+
+def test_extreme_bracer_curvature_warns_or_clamps():
+    audit = audit_bracer_geometry(
+        {
+            "bracer_length_mm": 180,
+            "wrist_width_mm": 70,
+            "forearm_width_mm": 100,
+            "bracer_thickness_mm": 4,
+            "bracer_arc_degrees": 220,
+        }
+    )
+    assert any("curvature is high" in warning for warning in audit["warnings"])
+
+
+def test_invalid_bracer_taper_audit_warns_and_generation_corrects():
+    metrics = {
+        "bracer_length_mm": 180,
+        "wrist_width_mm": 120,
+        "forearm_width_mm": 90,
+        "bracer_thickness_mm": 4,
+        "bracer_arc_degrees": 145,
+    }
+    audit = audit_bracer_geometry(metrics)
+    resolved, warnings = resolve_bracer_metrics(metrics)
+    assert resolved["wrist_width_mm"] == resolved["forearm_width_mm"]
+    assert any("Wrist width is larger" in warning for warning in audit["warnings"])
+    assert any("tapers outward" in warning for warning in warnings)
+
+
+def test_bracer_audit_warns_for_extreme_ratio_and_detail_size():
+    audit = audit_bracer_geometry(
+        {
+            "bracer_length_mm": 420,
+            "wrist_width_mm": 45,
+            "forearm_width_mm": 70,
+            "bracer_thickness_mm": 12,
+            "bracer_arc_degrees": 145,
+        },
+        detail_options={"rivets": True, "spikes": True, "unknown_detail": True},
+    )
+    combined = " ".join(audit["warnings"])
+    assert "length-to-width ratio is extreme" in combined
+    assert "Spike details" in combined
+    assert "Unsupported bracer detail option" in combined
+
+
+def test_valid_pauldron_audit_has_no_warnings():
+    audit = audit_pauldron_geometry(
+        {
+            "pauldron_width_mm": 165,
+            "pauldron_depth_mm": 120,
+            "pauldron_height_mm": 55,
+            "plate_count": 4,
+            "plate_overlap_mm": 14,
+            "pauldron_thickness_mm": 4.2,
+        },
+        detail_options={"raised_trim": True},
+    )
+    assert not audit["warnings"]
+    combined = " ".join(audit["passes"])
+    assert "plate overlap visually connects" in combined
+    assert "readable shoulder dome" in combined
+    assert "Armor type is supported" in combined
+
+
+def test_pauldron_audit_warns_for_many_plates_and_thin_material():
+    audit = audit_pauldron_geometry(
+        {
+            "pauldron_width_mm": 165,
+            "pauldron_depth_mm": 120,
+            "pauldron_height_mm": 55,
+            "plate_count": 8,
+            "plate_overlap_mm": 14,
+            "pauldron_thickness_mm": 2.4,
+        }
+    )
+    combined = " ".join(audit["warnings"])
+    assert "plate count" in combined
+    assert "thickness" in combined and "fragile" in combined
+
+
+def test_pauldron_audit_warns_for_low_overlap_and_extreme_proportions():
+    audit = audit_pauldron_geometry(
+        {
+            "pauldron_width_mm": 300,
+            "pauldron_depth_mm": 70,
+            "pauldron_height_mm": 125,
+            "plate_count": 4,
+            "plate_overlap_mm": 4,
+            "pauldron_thickness_mm": 4,
+        }
+    )
+    combined = " ".join(audit["warnings"])
+    assert "overlap is low" in combined
+    assert "width/depth proportion is extreme" in combined
+
+
+def test_pauldron_audit_warns_for_oversized_details_and_unknown_options():
+    audit = audit_pauldron_geometry(
+        {
+            "pauldron_width_mm": 80,
+            "pauldron_depth_mm": 80,
+            "pauldron_height_mm": 22,
+            "plate_count": 3,
+            "plate_overlap_mm": 8,
+            "pauldron_thickness_mm": 12,
+        },
+        detail_options={"spikes": True, "rivets": True, "unknown": True},
+    )
+    combined = " ".join(audit["warnings"])
+    assert "spikes are oversized" in combined
+    assert "rivets are large" in combined
+    assert "Unsupported pauldron detail option" in combined
 
 
 def test_blade_style_changes_generated_geometry():

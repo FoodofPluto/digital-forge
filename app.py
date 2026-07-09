@@ -6,24 +6,39 @@ import streamlit as st
 
 from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
-from geometry_audit import audit_geometry
+from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry
 from preview_service import export_with_openscad
 from realism_rules import check_realism
 from scad_generator import (
+    ARMOR_TYPES,
     BLADE_STYLES,
+    BRACER_STYLES,
+    DEFAULT_BRACER_METRICS,
+    DEFAULT_PAULDRON_METRICS,
     COMPONENT_NAMES,
     GUARD_STYLES,
+    PAULDRON_STYLES,
     POMMEL_STYLES,
     VISIBILITY_PRESETS,
     blade_detail_offset_for_position,
+    generate_armor_scad,
     generate_scad,
     has_visible_components,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
+from ui_params import (
+    GENERATION_CATEGORIES,
+    build_bracer_generation_params,
+    build_pauldron_generation_params,
+    enabled_bracer_detail_labels,
+    enabled_pauldron_detail_labels,
+    normalize_bracer_detail_options,
+    normalize_pauldron_detail_options,
+)
 
 st.set_page_config(page_title="Digital Forge", page_icon="DF", layout="wide")
 st.title("Digital Forge Version 4")
-st.caption("Design a dimensionally grounded decorative sword and export previewable OpenSCAD.")
+st.caption("Design dimensionally grounded decorative fantasy props and export previewable OpenSCAD.")
 
 
 def persist_openscad_path() -> None:
@@ -49,194 +64,327 @@ debug_geometry = st.sidebar.toggle(
     help="Add anchor, centerline, and translucent bounding markers to generated SCAD.",
 )
 
-sword_type = st.selectbox("Sword type", list(SWORD_PRESETS))
-preset = SWORD_PRESETS[sword_type]
+generation_category = st.selectbox("Generation category", GENERATION_CATEGORIES, index=0)
+can_export = True
 
-style_col1, style_col2, style_col3 = st.columns(3)
-with style_col1:
-    blade_style = st.selectbox("Blade style", BLADE_STYLES)
-with style_col2:
-    guard_style = st.selectbox("Guard style", GUARD_STYLES)
-with style_col3:
-    pommel_style = st.selectbox("Pommel style", POMMEL_STYLES)
+if generation_category == "Sword":
+    sword_type = st.selectbox("Sword type", list(SWORD_PRESETS))
+    preset = SWORD_PRESETS[sword_type]
 
-st.subheader("Assembly view")
+    style_col1, style_col2, style_col3 = st.columns(3)
+    with style_col1:
+        blade_style = st.selectbox("Blade style", BLADE_STYLES)
+    with style_col2:
+        guard_style = st.selectbox("Guard style", GUARD_STYLES)
+    with style_col3:
+        pommel_style = st.selectbox("Pommel style", POMMEL_STYLES)
 
+    st.subheader("Assembly view")
 
-def apply_visibility_preset() -> None:
-    for component, visible in VISIBILITY_PRESETS[st.session_state.visibility_preset].items():
-        st.session_state[f"show_{component}"] = visible
+    def apply_visibility_preset() -> None:
+        for component, visible in VISIBILITY_PRESETS[st.session_state.visibility_preset].items():
+            st.session_state[f"show_{component}"] = visible
 
+    visibility_preset = st.selectbox(
+        "Quick preset",
+        list(VISIBILITY_PRESETS),
+        key="visibility_preset",
+        on_change=apply_visibility_preset,
+    )
+    visibility_columns = st.columns(len(COMPONENT_NAMES))
+    visible_components = {}
+    for column, component in zip(visibility_columns, COMPONENT_NAMES):
+        key = f"show_{component}"
+        if key not in st.session_state:
+            st.session_state[key] = VISIBILITY_PRESETS[visibility_preset][component]
+        with column:
+            visible_components[component] = st.checkbox(
+                component.title(), key=key, help=f"Show or hide the {component} at its assembly position."
+            )
+    can_export = has_visible_components(visible_components)
+    if not can_export:
+        st.warning("Select at least one component to preview or export.")
 
-visibility_preset = st.selectbox(
-    "Quick preset",
-    list(VISIBILITY_PRESETS),
-    key="visibility_preset",
-    on_change=apply_visibility_preset,
-)
-visibility_columns = st.columns(len(COMPONENT_NAMES))
-visible_components = {}
-for column, component in zip(visibility_columns, COMPONENT_NAMES):
-    key = f"show_{component}"
-    if key not in st.session_state:
-        st.session_state[key] = VISIBILITY_PRESETS[visibility_preset][component]
-    with column:
-        visible_components[component] = st.checkbox(
-            component.title(), key=key, help=f"Show or hide the {component} at its assembly position."
+    st.subheader("Dimensions")
+    metric_columns = st.columns(3)
+    metrics = {}
+    for index, name in enumerate(REQUIRED_METRICS):
+        spec = preset[name]
+        with metric_columns[index % 3]:
+            metrics[name] = st.number_input(
+                name.replace("_mm", "").replace("_", " ").title() + " (mm)",
+                min_value=0.0 if name == "ricasso_length_mm" else 0.1,
+                value=float(spec["default"]),
+                step=1.0,
+                key=f"{sword_type}_{name}",
+                help=f"Typical range: {spec['min']:g}-{spec['max']:g} mm",
+            )
+
+    st.subheader("Tang and peg details")
+    tang_col1, tang_col2, tang_col3 = st.columns(3)
+    grip_length = metrics["grip_length_mm"]
+    grip_width = metrics["grip_width_mm"]
+    grip_depth = max(metrics["blade_thickness_mm"] * 1.8, grip_width * 0.68)
+    with tang_col1:
+        metrics["tang_length_mm"] = st.number_input(
+            "Tang length (mm)", 1.0, float(grip_length * 0.98), float(grip_length * 0.9), 1.0,
+            key=f"{sword_type}_tang_length_mm",
+            help="Internal prop core length; kept shorter than the external grip."
         )
-has_visible_component = has_visible_components(visible_components)
-if not has_visible_component:
-    st.warning("Select at least one component to preview or export.")
-
-st.subheader("Dimensions")
-metric_columns = st.columns(3)
-metrics = {}
-for index, name in enumerate(REQUIRED_METRICS):
-    spec = preset[name]
-    with metric_columns[index % 3]:
-        metrics[name] = st.number_input(
-            name.replace("_mm", "").replace("_", " ").title() + " (mm)",
-            min_value=0.0 if name == "ricasso_length_mm" else 0.1,
-            value=float(spec["default"]),
-            step=1.0,
-            key=f"{sword_type}_{name}",
-            help=f"Typical range: {spec['min']:g}-{spec['max']:g} mm",
+        metrics["tang_width_mm"] = st.number_input(
+            "Tang width (mm)", 1.0, float(grip_width * 0.9), float(grip_width * 0.5), 0.5,
+            key=f"{sword_type}_tang_width_mm"
         )
+    with tang_col2:
+        metrics["tang_thickness_mm"] = st.number_input(
+            "Tang thickness (mm)", 1.0, float(grip_depth * 0.9),
+            float(min(max(2.4, metrics["blade_thickness_mm"] * 0.72), grip_depth * 0.55)), 0.2,
+            key=f"{sword_type}_tang_thickness_mm"
+        )
+        metrics["peg_hole_count"] = st.selectbox(
+            "Peg hole count", (0, 1, 2, 3), key=f"{sword_type}_peg_hole_count"
+        )
+    with tang_col3:
+        metrics["peg_hole_diameter_mm"] = st.number_input(
+            "Peg hole diameter (mm)", 1.0, float(max(1.0, grip_width * 0.25)), 4.0, 0.5,
+            key=f"{sword_type}_peg_hole_diameter_mm"
+        )
+        metrics["peg_hole_spacing_mm"] = st.number_input(
+            "Peg hole spacing (mm)", 1.0, float(max(1.0, grip_length)),
+            float(max(8.0, grip_length * 0.22)), 1.0, disabled=metrics["peg_hole_count"] < 2,
+            key=f"{sword_type}_peg_hole_spacing_mm",
+            help="Center-to-center spacing; generation clamps holes inside the tang."
+        )
+    metrics["peg_hole_offset_from_guard_mm"] = max(6.0, grip_length * 0.12)
 
-st.subheader("Tang and peg details")
-tang_col1, tang_col2, tang_col3 = st.columns(3)
-grip_length = metrics["grip_length_mm"]
-grip_width = metrics["grip_width_mm"]
-grip_depth = max(metrics["blade_thickness_mm"] * 1.8, grip_width * 0.68)
-with tang_col1:
-    metrics["tang_length_mm"] = st.number_input(
-        "Tang length (mm)", 1.0, float(grip_length * 0.98), float(grip_length * 0.9), 1.0,
-        key=f"{sword_type}_tang_length_mm",
-        help="Internal prop core length; kept shorter than the external grip."
+    st.subheader("Blade details")
+    detail_col1, detail_col2, detail_col3 = st.columns(3)
+    with detail_col1:
+        fuller_enabled = st.checkbox("Enable fuller", value=False)
+        ridge_enabled = st.checkbox("Enable central ridge", value=False)
+    with detail_col2:
+        fuller_length_ratio = st.slider(
+            "Fuller length ratio", 0.35, 0.90, 0.65, 0.05, disabled=not fuller_enabled,
+            help="Percentage of usable blade length; generation keeps ricasso and tip margins.",
+        )
+    with detail_col3:
+        fuller_width_mm = st.number_input(
+            "Fuller width (mm)", min_value=1.0, value=12.0, step=1.0, disabled=not fuller_enabled
+        )
+        fuller_depth_mm = st.number_input(
+            "Fuller depth (mm)", min_value=0.35, max_value=3.0, value=0.8, step=0.1,
+            disabled=not fuller_enabled,
+        )
+    position_col1, position_col2 = st.columns(2)
+    position_options = ("Center", "Slight left", "Slight right")
+    with position_col1:
+        fuller_position = st.selectbox(
+            "Fuller position", position_options, disabled=not fuller_enabled
+        )
+    with position_col2:
+        ridge_position = st.selectbox(
+            "Ridge position", position_options, disabled=not ridge_enabled
+        )
+    fuller_offset_x = blade_detail_offset_for_position(
+        fuller_position, metrics["blade_base_width_mm"], metrics["blade_length_mm"], blade_style
     )
-    metrics["tang_width_mm"] = st.number_input(
-        "Tang width (mm)", 1.0, float(grip_width * 0.9), float(grip_width * 0.5), 0.5,
-        key=f"{sword_type}_tang_width_mm"
+    ridge_offset_x = blade_detail_offset_for_position(
+        ridge_position, metrics["blade_base_width_mm"], metrics["blade_length_mm"], blade_style
     )
-with tang_col2:
-    metrics["tang_thickness_mm"] = st.number_input(
-        "Tang thickness (mm)", 1.0, float(grip_depth * 0.9),
-        float(min(max(2.4, metrics["blade_thickness_mm"] * 0.72), grip_depth * 0.55)), 0.2,
-        key=f"{sword_type}_tang_thickness_mm"
-    )
-    metrics["peg_hole_count"] = st.selectbox(
-        "Peg hole count", (0, 1, 2, 3), key=f"{sword_type}_peg_hole_count"
-    )
-with tang_col3:
-    metrics["peg_hole_diameter_mm"] = st.number_input(
-        "Peg hole diameter (mm)", 1.0, float(max(1.0, grip_width * 0.25)), 4.0, 0.5,
-        key=f"{sword_type}_peg_hole_diameter_mm"
-    )
-    metrics["peg_hole_spacing_mm"] = st.number_input(
-        "Peg hole spacing (mm)", 1.0, float(max(1.0, grip_length)),
-        float(max(8.0, grip_length * 0.22)), 1.0, disabled=metrics["peg_hole_count"] < 2,
-        key=f"{sword_type}_peg_hole_spacing_mm",
-        help="Center-to-center spacing; generation clamps holes inside the tang."
-    )
-metrics["peg_hole_offset_from_guard_mm"] = max(6.0, grip_length * 0.12)
 
-st.subheader("Blade details")
-detail_col1, detail_col2, detail_col3 = st.columns(3)
-with detail_col1:
-    fuller_enabled = st.checkbox("Enable fuller", value=False)
-    ridge_enabled = st.checkbox("Enable central ridge", value=False)
-with detail_col2:
-    fuller_length_ratio = st.slider(
-        "Fuller length ratio", 0.35, 0.90, 0.65, 0.05, disabled=not fuller_enabled,
-        help="Percentage of usable blade length; generation keeps ricasso and tip margins.",
-    )
-with detail_col3:
-    fuller_width_mm = st.number_input(
-        "Fuller width (mm)", min_value=1.0, value=12.0, step=1.0, disabled=not fuller_enabled
-    )
-    fuller_depth_mm = st.number_input(
-        "Fuller depth (mm)", min_value=0.35, max_value=3.0, value=0.8, step=0.1,
-        disabled=not fuller_enabled,
-    )
-position_col1, position_col2 = st.columns(2)
-position_options = ("Center", "Slight left", "Slight right")
-with position_col1:
-    fuller_position = st.selectbox(
-        "Fuller position", position_options, disabled=not fuller_enabled
-    )
-with position_col2:
-    ridge_position = st.selectbox(
-        "Ridge position", position_options, disabled=not ridge_enabled
-    )
-fuller_offset_x = blade_detail_offset_for_position(
-    fuller_position, metrics["blade_base_width_mm"], metrics["blade_length_mm"], blade_style
-)
-ridge_offset_x = blade_detail_offset_for_position(
-    ridge_position, metrics["blade_base_width_mm"], metrics["blade_length_mm"], blade_style
-)
+    st.subheader("Design notes")
+    st.info(get_design_notes(sword_type, blade_style, guard_style, pommel_style))
 
-st.subheader("Design notes")
-st.info(get_design_notes(sword_type, blade_style, guard_style, pommel_style))
+    warnings = check_realism(sword_type, metrics, fuller_enabled, fuller_length_ratio)
+    if warnings:
+        st.subheader("Realism notes")
+        for warning in warnings:
+            st.warning(warning)
+    else:
+        st.success("All dimensions are within the preset's typical ranges and proportions.")
 
-warnings = check_realism(sword_type, metrics, fuller_enabled, fuller_length_ratio)
-if warnings:
-    st.subheader("Realism notes")
-    for warning in warnings:
-        st.warning(warning)
+    st.subheader("Geometry audit")
+    audit = audit_geometry(
+        metrics, sword_type, blade_style, guard_style, pommel_style, visible_components,
+        fuller_enabled, fuller_length_ratio, ridge_enabled,
+        fuller_offset_x, ridge_offset_x, fuller_width_mm, fuller_depth_mm,
+    )
+    audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
+    with audit_warning_col:
+        st.markdown("**Warnings**")
+        if audit["warnings"]:
+            for message in audit["warnings"]:
+                st.warning(message)
+        else:
+            st.success("No geometry warnings.")
+    with audit_info_col:
+        st.markdown("**Notes**")
+        if audit["info"]:
+            for message in audit["info"]:
+                st.info(message)
+        else:
+            st.caption("No additional geometry notes.")
+    with audit_pass_col:
+        st.markdown("**Checks passed**")
+        for message in audit["passes"]:
+            st.success(message)
+
+    scad = generate_scad(
+        sword_type,
+        metrics,
+        blade_style,
+        guard_style,
+        pommel_style,
+        fuller_enabled,
+        fuller_length_ratio,
+        fuller_width_mm,
+        ridge_enabled,
+        debug_geometry,
+        visible_components,
+        fuller_offset_x,
+        ridge_offset_x,
+        fuller_depth_mm,
+    )
+    download_name = f"{sword_type}.scad"
 else:
-    st.success("All dimensions are within the preset's typical ranges and proportions.")
+    st.subheader("Armor")
+    armor_type = st.selectbox("Armor type", ARMOR_TYPES)
 
-st.subheader("Geometry audit")
-audit = audit_geometry(
-    metrics, sword_type, blade_style, guard_style, pommel_style, visible_components,
-    fuller_enabled, fuller_length_ratio, ridge_enabled,
-    fuller_offset_x, ridge_offset_x, fuller_width_mm, fuller_depth_mm,
-)
-audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
-with audit_warning_col:
-    st.markdown("**Warnings**")
-    if audit["warnings"]:
-        for message in audit["warnings"]:
-            st.warning(message)
+    st.caption("Armor models are decorative/prototype fantasy prop geometry only, not wearable protective equipment.")
+
+    if armor_type == "Bracer":
+        bracer_style = st.selectbox("Bracer style", BRACER_STYLES)
+        st.subheader("Bracer dimensions")
+        bracer_columns = st.columns(3)
+        bracer_specs = {
+            "bracer_length_mm": (60.0, 420.0, DEFAULT_BRACER_METRICS["bracer_length_mm"], 1.0),
+            "wrist_width_mm": (35.0, 180.0, DEFAULT_BRACER_METRICS["wrist_width_mm"], 1.0),
+            "forearm_width_mm": (45.0, 240.0, DEFAULT_BRACER_METRICS["forearm_width_mm"], 1.0),
+            "bracer_thickness_mm": (2.4, 12.0, DEFAULT_BRACER_METRICS["bracer_thickness_mm"], 0.2),
+            "bracer_arc_degrees": (80.0, 220.0, DEFAULT_BRACER_METRICS["bracer_arc_degrees"], 1.0),
+        }
+        bracer_metrics = {}
+        for index, (name, spec) in enumerate(bracer_specs.items()):
+            minimum, maximum, default, step = spec
+            with bracer_columns[index % 3]:
+                bracer_metrics[name] = st.number_input(
+                    name.replace("_mm", "").replace("_", " ").title() + (" (deg)" if name.endswith("degrees") else " (mm)"),
+                    minimum,
+                    maximum,
+                    float(default),
+                    step,
+                    key=f"armor_{name}",
+                )
+
+        st.subheader("Bracer details")
+        default_details = normalize_bracer_detail_options(bracer_style)
+        detail_cols = st.columns(5)
+        detail_options = {}
+        labels = {
+            "raised_trim": "Raised trim",
+            "rivets": "Rivets",
+            "center_ridge": "Center ridge",
+            "spikes": "Spikes",
+            "runes": "Runes / motif",
+        }
+        for column, name in zip(detail_cols, labels):
+            with column:
+                detail_options[name] = st.checkbox(labels[name], value=default_details[name], key=f"armor_{bracer_style}_{name}")
+
+        armor_params, armor_warnings = build_bracer_generation_params(
+            armor_type, bracer_style, bracer_metrics, detail_options
+        )
+        armor_audit = audit_bracer_geometry(
+            armor_params["metrics"],
+            armor_params["armor_type"],
+            armor_params["bracer_style"],
+            armor_params["detail_options"],
+        )
+        enabled_details = enabled_bracer_detail_labels(armor_params["detail_options"])
     else:
-        st.success("No geometry warnings.")
-with audit_info_col:
-    st.markdown("**Notes**")
-    if audit["info"]:
-        for message in audit["info"]:
+        pauldron_style = st.selectbox("Pauldron style", PAULDRON_STYLES)
+        st.subheader("Pauldron dimensions")
+        pauldron_columns = st.columns(3)
+        pauldron_specs = {
+            "pauldron_width_mm": (70.0, 320.0, DEFAULT_PAULDRON_METRICS["pauldron_width_mm"], 1.0),
+            "pauldron_depth_mm": (55.0, 260.0, DEFAULT_PAULDRON_METRICS["pauldron_depth_mm"], 1.0),
+            "pauldron_height_mm": (18.0, 130.0, DEFAULT_PAULDRON_METRICS["pauldron_height_mm"], 1.0),
+            "plate_count": (2, 8, int(DEFAULT_PAULDRON_METRICS["plate_count"]), 1),
+            "plate_overlap_mm": (4.0, 45.0, DEFAULT_PAULDRON_METRICS["plate_overlap_mm"], 1.0),
+            "pauldron_thickness_mm": (2.4, 12.0, DEFAULT_PAULDRON_METRICS["pauldron_thickness_mm"], 0.2),
+        }
+        pauldron_metrics = {}
+        for index, (name, spec) in enumerate(pauldron_specs.items()):
+            minimum, maximum, default, step = spec
+            with pauldron_columns[index % 3]:
+                label = name.replace("_mm", "").replace("_", " ").title()
+                if name.endswith("_mm"):
+                    label += " (mm)"
+                pauldron_metrics[name] = st.number_input(
+                    label,
+                    minimum,
+                    maximum,
+                    default,
+                    step,
+                    key=f"armor_{name}",
+                )
+
+        st.subheader("Pauldron details")
+        default_details = normalize_pauldron_detail_options(pauldron_style)
+        detail_cols = st.columns(4)
+        detail_options = {}
+        labels = {
+            "raised_trim": "Raised trim",
+            "rivets": "Rivets",
+            "spikes": "Spikes",
+            "runes": "Runes / motif",
+        }
+        for column, name in zip(detail_cols, labels):
+            with column:
+                detail_options[name] = st.checkbox(labels[name], value=default_details[name], key=f"armor_{pauldron_style}_{name}")
+
+        armor_params, armor_warnings = build_pauldron_generation_params(
+            armor_type, pauldron_style, pauldron_metrics, detail_options
+        )
+        armor_audit = audit_pauldron_geometry(
+            armor_params["metrics"],
+            armor_params["armor_type"],
+            armor_params["pauldron_style"],
+            armor_params["detail_options"],
+        )
+        enabled_details = enabled_pauldron_detail_labels(armor_params["detail_options"])
+
+    st.subheader("Geometry audit")
+    audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
+    with audit_warning_col:
+        st.markdown("**Warnings**")
+        warnings = armor_warnings + armor_audit["warnings"]
+        if warnings:
+            for warning in warnings:
+                st.warning(warning)
+        else:
+            st.success(f"No {armor_type.lower()} geometry warnings.")
+    with audit_info_col:
+        st.markdown("**Notes**")
+        st.info("Enabled bracer details: " + (", ".join(enabled_details) if enabled_details else "none") + ".")
+        for message in armor_audit["info"]:
             st.info(message)
-    else:
-        st.caption("No additional geometry notes.")
-with audit_pass_col:
-    st.markdown("**Checks passed**")
-    for message in audit["passes"]:
-        st.success(message)
+    with audit_pass_col:
+        st.markdown("**Checks passed**")
+        for message in armor_audit["passes"]:
+            st.success(message)
 
-scad = generate_scad(
-    sword_type,
-    metrics,
-    blade_style,
-    guard_style,
-    pommel_style,
-    fuller_enabled,
-    fuller_length_ratio,
-    fuller_width_mm,
-    ridge_enabled,
-    debug_geometry,
-    visible_components,
-    fuller_offset_x,
-    ridge_offset_x,
-    fuller_depth_mm,
-)
+    scad = generate_armor_scad(**armor_params, debug_geometry=debug_geometry)
+    download_name = f"{armor_type.lower()}.scad"
 st.subheader("Generated OpenSCAD")
 st.code(scad, language="openscad")
 st.download_button(
-    "Download .scad", data=scad, file_name=f"{sword_type}.scad", mime="text/plain"
+    "Download .scad", data=scad, file_name=download_name, mime="text/plain"
 )
 
 preview_col, stl_col = st.columns(2)
 with preview_col:
-    if st.button("Generate OpenSCAD Preview", disabled=not has_visible_component):
+    if st.button("Generate OpenSCAD Preview", disabled=not can_export):
         result = export_with_openscad(scad, openscad_path, "png")
         if result.success and result.path:
             st.success(result.message)
@@ -244,7 +392,7 @@ with preview_col:
         else:
             st.error(result.message)
 with stl_col:
-    if st.button("Generate STL", disabled=not has_visible_component):
+    if st.button("Generate STL", disabled=not can_export):
         result = export_with_openscad(scad, openscad_path, "stl")
         if result.success and result.path:
             try:

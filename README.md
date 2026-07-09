@@ -1,6 +1,6 @@
 # Digital Forge Version 4
 
-A minimum viable Streamlit sword designer that turns editable real-world dimensions into a self-contained OpenSCAD model.
+A minimum viable Streamlit fantasy prop designer that turns editable real-world dimensions into a self-contained OpenSCAD model.
 
 ## Setup
 
@@ -25,7 +25,7 @@ Run the tests:
 pytest
 ```
 
-The downloaded `.scad` file can be opened directly in OpenSCAD. Dimensions are in millimetres. Realism messages are advisory and never prevent export.
+The downloaded `.scad` file can be opened directly in OpenSCAD. Dimensions are in millimetres. Realism and geometry messages are advisory and never prevent export.
 
 ## Version 2 Features
 
@@ -58,6 +58,33 @@ Version 4 focuses on geometry stabilization, visual debugging, and safer optiona
 - Structured OpenSCAD preview/export results for missing tools, invalid paths, command failures,
   timeouts, empty outputs, invalid input, and file errors
 - A Streamlit debug toggle, grouped audit results, clear export errors, and known limitations
+
+## Armor Mode
+
+The main Streamlit app now has a top-level **Generation category** selector:
+
+- **Sword** remains the default and preserves the existing sword controls, audit, preview, SCAD download, and STL export flow.
+- **Armor** shows armor-specific controls and currently supports **Bracer** and **Pauldron**.
+
+The Bracer generator creates a decorative forearm cuff / arm guard with:
+
+- Length, wrist width, forearm width, thickness, and arc/curvature controls
+- Knight, Barbarian, and Elven style options
+- Optional raised trim, rivets, center ridge, blunt fantasy spikes, and rune-like decorative motifs
+- User-facing warnings when dimensions are clamped into the supported decorative prop range
+
+The Pauldron generator creates decorative shoulder armor with:
+
+- Width, depth, height, plate count, plate overlap, and thickness controls
+- Knight, Barbarian, and Elven style options
+- Layered overlapping plates with optional trim, rivets, blunt fantasy spikes, and rune-like motifs
+- User-facing warnings for thin plates, low overlap, high plate counts, oversized details, and extreme proportions
+
+Armor output uses the same generated SCAD display, `.scad` download, PNG preview, and STL export buttons as Sword mode. OpenSCAD is still only required for preview and STL export.
+
+Armor models are decorative/prototype fantasy prop geometry only. They are not wearable protective equipment and should not be treated as safety gear, fabrication-grade armor, or validated protective equipment.
+
+Bracers and pauldrons are not fitted from real body measurements. Their dimensions are visual prop dimensions used to shape the model silhouette, not ergonomic, medical, safety, or protective fit guidance.
 
 ## Coordinate system
 
@@ -94,9 +121,13 @@ Export failures are reported in the app without stopping SCAD generation or down
 
 ## Known limitations
 
-The generated models use intentionally simplified, decorative geometry. They are not exact engineering or weapon-manufacturing plans and are not suitable for fabrication decisions. The app does not model accurate edge bevels, distal taper, complex guard construction, material properties, mass, balance, structural loads, or fabrication-grade validation.
+The generated models use intentionally simplified, decorative geometry. They are not exact engineering, weapon-manufacturing, or protective-equipment plans and are not suitable for fabrication decisions. The app does not model accurate edge bevels, distal taper, complex guard construction, body fit, articulation, material properties, mass, balance, structural loads, impact resistance, or fabrication-grade validation.
 
 - OpenSCAD PNG previews use its default command-line camera.
 - No interactive STL viewer is bundled.
 - Debug bounds are visual diagnostics, not collision or manufacturability analysis.
 - Sword and guard variants remain intentionally limited while the shared geometry contract stabilizes.
+- Armor mode currently supports Bracer and Pauldron as the first armor modules.
+- Armor trim, rivets, spikes, and motifs are decorative surface details and are not validated for strength, comfort, or wearability.
+- Preview quality and export behavior depend on the local OpenSCAD installation.
+- More armor types and larger armor sets are planned but not implemented yet.
