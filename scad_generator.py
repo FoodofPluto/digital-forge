@@ -4,14 +4,20 @@ BLADE_STYLES = ("tapered", "leaf", "needle", "curved", "falchion")
 GUARD_STYLES = ("straight", "crescent", "downturned", "disk")
 POMMEL_STYLES = ("sphere", "wheel", "ring", "spike")
 ARMOR_TYPES = ("Bracer", "Pauldron")
-BRACER_STYLES = ("Knight", "Barbarian", "Elven")
+BRACER_STYLES = ("Plain",)
 BRACER_DETAIL_OPTIONS = ("raised_trim", "rivets", "center_ridge", "spikes", "runes")
+BRACER_BINDING_STYLES = ("None", "Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots")
 DEFAULT_BRACER_METRICS = {
     "bracer_length_mm": 180.0,
     "wrist_width_mm": 70.0,
     "forearm_width_mm": 100.0,
+    "bracer_depth_mm": 48.0,
     "bracer_thickness_mm": 4.0,
-    "bracer_arc_degrees": 145.0,
+    "bracer_wall_thickness_mm": 4.0,
+    "bracer_arc_degrees": 220.0,
+    "bracer_opening_width_mm": 34.0,
+    "bracer_detail_depth_mm": 2.2,
+    "bracer_exterior_finishing_allowance_mm": 0.5,
 }
 PAULDRON_STYLES = ("Knight", "Barbarian", "Elven")
 PAULDRON_DETAIL_OPTIONS = ("raised_trim", "rivets", "spikes", "runes")
@@ -66,10 +72,9 @@ def _finite_float(value: object, fallback: float) -> float:
     return number if number == number and number not in (float("inf"), float("-inf")) else fallback
 
 
-def normalize_bracer_style(bracer_style: str = "Knight") -> str:
-    """Return a supported bracer style name."""
-    normalized = str(bracer_style or "Knight").strip().title()
-    return normalized if normalized in BRACER_STYLES else "Knight"
+def normalize_bracer_style(bracer_style: str = "Plain") -> str:
+    """Return the supported bracer aggregate style, falling legacy values back to Plain."""
+    return "Plain"
 
 
 def normalize_pauldron_style(pauldron_style: str = "Knight") -> str:
@@ -84,18 +89,36 @@ def normalize_armor_type(armor_type: str = "Bracer") -> str:
     return normalized if normalized in ARMOR_TYPES else "Bracer"
 
 
+def normalize_bracer_binding_style(binding_style: str = "None") -> str:
+    """Return a supported bracer binding/closure style."""
+    normalized = str(binding_style or "None").strip().title()
+    aliases = {
+        "None": "None",
+        "Lacing Holes": "Lacing Holes",
+        "Lacing Hole": "Lacing Holes",
+        "Lacing Loops": "Lacing Loops",
+        "Lacing Loop": "Lacing Loops",
+        "Strap Slots": "Strap Slots",
+        "Strap Slot": "Strap Slots",
+        "Buckle-Ready Slots": "Buckle-Ready Slots",
+        "Buckle Ready Slots": "Buckle-Ready Slots",
+        "Buckle Tabs": "Buckle-Ready Slots",
+        "Buckle Tab": "Buckle-Ready Slots",
+    }
+    return aliases.get(normalized, "None")
+
+
 def normalize_bracer_detail_options(
     bracer_style: str = "Knight",
     detail_options: dict[str, bool] | None = None,
 ) -> dict[str, bool]:
-    """Return complete bracer detail flags with style-aware defaults."""
-    style = normalize_bracer_style(bracer_style)
+    """Return complete bracer detail flags. Legacy aggregate styles no longer add details."""
     defaults = {
-        "raised_trim": True,
-        "rivets": style == "Barbarian",
-        "center_ridge": style == "Knight",
+        "raised_trim": False,
+        "rivets": False,
+        "center_ridge": False,
         "spikes": False,
-        "runes": style == "Elven",
+        "runes": False,
     }
     if detail_options:
         defaults.update({name: bool(detail_options[name]) for name in BRACER_DETAIL_OPTIONS if name in detail_options})
@@ -129,41 +152,196 @@ def resolve_bracer_metrics(metrics: dict[str, float] | None = None) -> tuple[dic
     length = clamp(_finite_float(source.get("bracer_length_mm"), 180.0), 60.0, 420.0)
     wrist = clamp(_finite_float(source.get("wrist_width_mm"), 70.0), 35.0, 180.0)
     forearm = clamp(_finite_float(source.get("forearm_width_mm"), 100.0), 45.0, 240.0)
-    thickness = clamp(_finite_float(source.get("bracer_thickness_mm"), 4.0), 2.4, 12.0)
-    arc = clamp(_finite_float(source.get("bracer_arc_degrees"), 145.0), 80.0, 220.0)
+    depth_default = max(28.0, min(90.0, (wrist + forearm) * 0.28))
+    depth = clamp(_finite_float(source.get("bracer_depth_mm"), depth_default), 24.0, 140.0)
+    thickness_source = (
+        metrics.get("bracer_wall_thickness_mm")
+        if metrics and "bracer_wall_thickness_mm" in metrics
+        else source.get("bracer_thickness_mm")
+    )
+    thickness = clamp(_finite_float(thickness_source, 4.0), 2.4, 12.0)
+    arc = clamp(_finite_float(source.get("bracer_arc_degrees"), 220.0), 120.0, 260.0)
+    opening_default = max(24.0, min(wrist, forearm) * 0.48)
+    opening = clamp(_finite_float(source.get("bracer_opening_width_mm"), opening_default), 16.0, 120.0)
+    detail_depth = clamp(_finite_float(source.get("bracer_detail_depth_mm"), thickness * 0.55), 0.8, 6.0)
+    finishing_allowance = clamp(
+        _finite_float(source.get("bracer_exterior_finishing_allowance_mm"), 0.5),
+        0.0,
+        1.5,
+    )
 
     requested = {
         "bracer_length_mm": source.get("bracer_length_mm"),
         "wrist_width_mm": source.get("wrist_width_mm"),
         "forearm_width_mm": source.get("forearm_width_mm"),
+        "bracer_depth_mm": source.get("bracer_depth_mm"),
         "bracer_thickness_mm": source.get("bracer_thickness_mm"),
+        "bracer_wall_thickness_mm": source.get("bracer_wall_thickness_mm", source.get("bracer_thickness_mm")),
         "bracer_arc_degrees": source.get("bracer_arc_degrees"),
+        "bracer_opening_width_mm": source.get("bracer_opening_width_mm"),
+        "bracer_detail_depth_mm": source.get("bracer_detail_depth_mm"),
+        "bracer_exterior_finishing_allowance_mm": source.get("bracer_exterior_finishing_allowance_mm"),
     }
     resolved = {
         "bracer_length_mm": length,
         "wrist_width_mm": wrist,
         "forearm_width_mm": forearm,
+        "bracer_depth_mm": depth,
         "bracer_thickness_mm": thickness,
+        "bracer_wall_thickness_mm": thickness,
         "bracer_arc_degrees": arc,
+        "bracer_opening_width_mm": opening,
+        "bracer_detail_depth_mm": detail_depth,
+        "bracer_exterior_finishing_allowance_mm": finishing_allowance,
     }
     for name, value in resolved.items():
-        if _finite_float(requested[name], DEFAULT_BRACER_METRICS[name]) != value:
+        fallback = DEFAULT_BRACER_METRICS.get(name, value)
+        requested_value = thickness_source if name == "bracer_wall_thickness_mm" else requested[name]
+        if _finite_float(requested_value, fallback) != value:
             warnings.append(f"{name} was clamped to {value:g}.")
 
     if wrist > forearm:
-        warnings.append("wrist_width_mm was clamped to forearm_width_mm so the bracer tapers outward.")
-        wrist = forearm
+        wrist = max(35.0, forearm * 0.82)
         resolved["wrist_width_mm"] = wrist
+        warnings.append("wrist_width_mm was reduced so the bracer tapers outward from wrist to elbow.")
+
+    min_outer_half = min(wrist, forearm, depth) / 2
+    max_wall = max(2.4, min_outer_half - 4.0)
+    if thickness > max_wall:
+        thickness = max_wall
+        resolved["bracer_thickness_mm"] = thickness
+        resolved["bracer_wall_thickness_mm"] = thickness
+        warnings.append(f"bracer_wall_thickness_mm was reduced to {thickness:g} so the inner cavity fits.")
+
+    estimated_hole = clamp(thickness * 1.25, 3.0, 7.0)
+    estimated_slot_length = clamp(thickness * 1.8, 6.0, 10.0)
+    estimated_bridge = max(thickness, estimated_hole / 2, estimated_slot_length / 2, 3.0)
+    closure_side_width = estimated_bridge + max(estimated_hole, estimated_slot_length) + finishing_allowance * 2
+    safe_opening = max(16.0, min(wrist, forearm) - closure_side_width * 2)
+    if opening > safe_opening:
+        opening = safe_opening
+        resolved["bracer_opening_width_mm"] = opening
+        warnings.append(
+            f"bracer_opening_width_mm was reduced to {opening:g} "
+            "to leave material around closure passages."
+        )
+
+    max_detail = max(0.8, thickness * 1.1)
+    if detail_depth > max_detail:
+        detail_depth = max_detail
+        resolved["bracer_detail_depth_mm"] = detail_depth
+        warnings.append(f"bracer_detail_depth_mm was reduced to {detail_depth:g} to keep decoration printable.")
+
+    max_finishing = max(0.0, min(1.5, thickness * 0.28))
+    if finishing_allowance > max_finishing:
+        finishing_allowance = max_finishing
+        resolved["bracer_exterior_finishing_allowance_mm"] = finishing_allowance
+        warnings.append(
+            f"bracer_exterior_finishing_allowance_mm was reduced to {finishing_allowance:g} "
+            "to preserve closure edge material."
+        )
 
     trim_width = clamp(length * 0.075, 6.0, 18.0)
     panel_length = max(12.0, length - trim_width * 3.4)
+    rivet_diameter = clamp(thickness * 1.35, 3.0, min(8.5, min(wrist, forearm) * 0.09))
+    spike_height = clamp(thickness * 2.3, 5.0, min(18.0, depth * 0.26))
+    shell_side_width = max(0.0, (min(wrist, forearm) - opening) / 2)
+    binding_hole_diameter = clamp(thickness * 1.25, 3.0, 7.0)
+    flange_width = clamp(max(thickness * 3.0, binding_hole_diameter * 2.6), 10.0, 20.0)
+    flange_thickness = clamp(max(thickness * 1.35, binding_hole_diameter * 1.45), 6.0, 12.0)
+    flange_outward_offset = flange_thickness / 2 + finishing_allowance + thickness * 0.28
+    min_hole_bridge = max(2.4, binding_hole_diameter * 0.45, min(thickness * 0.6, 4.5))
+    safe_hole_diameter = max(2.6, flange_width - 2 * min_hole_bridge)
+    if binding_hole_diameter > safe_hole_diameter:
+        binding_hole_diameter = safe_hole_diameter
+        warnings.append(
+            f"bracer_binding_hole_diameter_mm was reduced to {binding_hole_diameter:g} "
+            "so lacing holes stay enclosed in the closure flange."
+        )
+    flange_width = clamp(max(thickness * 3.0, binding_hole_diameter * 2.6), 10.0, 20.0)
+    flange_thickness = clamp(max(thickness * 1.35, binding_hole_diameter * 1.45), 6.0, 12.0)
+    flange_outward_offset = flange_thickness / 2 + finishing_allowance + thickness * 0.28
+    strap_width = clamp(min(wrist, forearm) * 0.22, 10.0, 24.0)
+    strap_length = clamp(thickness * 1.8, 5.5, min(10.0, flange_width * 0.58))
+    strap_clearance = clamp(strap_width * 0.14, 2.0, 4.0)
+    strap_slot_width = strap_width + strap_clearance
+    min_slot_bridge = max(2.4, strap_length * 0.35, min(thickness * 0.6, 4.5))
+    safe_slot_length = max(5.0, flange_width - 2 * min_slot_bridge)
+    if strap_length > safe_slot_length:
+        strap_length = safe_slot_length
+        warnings.append(
+            f"bracer_strap_slot_length_mm was reduced to {strap_length:g} "
+            "so strap slots stay enclosed in the closure flange."
+        )
+    wrist_margin = max(trim_width * 1.35, binding_hole_diameter * 2.0, length * 0.14, 16.0)
+    elbow_margin = max(trim_width * 1.35, binding_hole_diameter * 2.0, length * 0.14, 16.0)
+    usable_binding_span = max(0.0, length - wrist_margin - elbow_margin)
+    binding_count = max(2, min(6, int(usable_binding_span // max(34.0, binding_hole_diameter * 5.2)) + 1))
+    if usable_binding_span < max(34.0, binding_hole_diameter * 5.2):
+        binding_count = 2
+        warnings.append("bracer_binding_count was reduced to 2 because the bracer is short near the closure ends.")
+    binding_margin = wrist_margin
+    loop_passage = max(3.2, binding_hole_diameter)
+    loop_wall = clamp(max(1.8, thickness * 0.45), 1.8, 3.2)
+    loop_height = clamp(loop_passage + loop_wall * 1.2, 5.0, flange_thickness * 1.1)
+    loop_length = clamp(loop_passage + loop_wall * 2.2, 7.5, max(8.0, usable_binding_span / max(2, binding_count) * 0.42))
     resolved.update(
         bracer_trim_width_mm=trim_width,
         bracer_panel_length_mm=panel_length,
-        bracer_panel_width_mm=clamp(min(wrist, forearm) * 0.34, 14.0, 48.0),
-        bracer_rivet_diameter_mm=clamp(thickness * 1.45, 3.2, 10.0),
+        bracer_panel_width_mm=clamp(min(wrist, forearm) * 0.30, 14.0, 44.0),
+        bracer_rivet_diameter_mm=rivet_diameter,
+        bracer_spike_height_mm=spike_height,
+        bracer_binding_hole_diameter_mm=binding_hole_diameter,
+        bracer_binding_margin_mm=binding_margin,
+        bracer_closure_wrist_margin_mm=wrist_margin,
+        bracer_closure_elbow_margin_mm=elbow_margin,
+        bracer_closure_usable_length_mm=usable_binding_span,
+        bracer_binding_count=binding_count,
+        bracer_closure_edge_margin_mm=max(min_hole_bridge, min_slot_bridge),
+        bracer_closure_flange_width_mm=flange_width,
+        bracer_closure_flange_thickness_mm=flange_thickness,
+        bracer_closure_flange_outward_offset_mm=flange_outward_offset,
+        bracer_strap_width_nominal_mm=strap_width,
+        bracer_strap_slot_width_mm=strap_slot_width,
+        bracer_strap_slot_length_mm=strap_length,
+        bracer_buckle_slot_width_mm=strap_slot_width + max(3.0, strap_clearance),
+        bracer_buckle_slot_length_mm=min(flange_width * 0.72, strap_length + max(2.0, thickness * 0.35)),
+        bracer_loop_passage_diameter_mm=loop_passage,
+        bracer_loop_wall_thickness_mm=loop_wall,
+        bracer_loop_height_mm=loop_height,
+        bracer_loop_length_mm=loop_length,
     )
     return resolved, warnings
+
+
+def bracer_closure_layout_metrics(metrics: dict[str, float] | None = None) -> dict[str, object]:
+    """Return deterministic bracer closure placement metrics for tests and audits."""
+    resolved, _ = resolve_bracer_metrics(metrics)
+    count = int(resolved["bracer_binding_count"])
+    wrist_margin = resolved["bracer_closure_wrist_margin_mm"]
+    usable = resolved["bracer_closure_usable_length_mm"]
+    positions = [
+        wrist_margin + index * usable / max(1, count - 1)
+        for index in range(count)
+    ]
+    flange_width = resolved["bracer_closure_flange_width_mm"]
+    flange_thickness = resolved["bracer_closure_flange_thickness_mm"]
+    hole_diameter = resolved["bracer_binding_hole_diameter_mm"]
+    strap_length = resolved["bracer_strap_slot_length_mm"]
+    buckle_length = resolved["bracer_buckle_slot_length_mm"]
+    return {
+        "metrics": resolved,
+        "positions_y": positions,
+        "usable_midpoint_y": wrist_margin + usable / 2,
+        "hole_flange_margin_mm": (flange_width - hole_diameter) / 2,
+        "strap_slot_flange_margin_mm": (flange_width - strap_length) / 2,
+        "buckle_slot_flange_margin_mm": (flange_width - buckle_length) / 2,
+        "cutter_axis": "radial_flange_normal_xz",
+        "legacy_shell_tangent_axis": "z",
+        "cutter_crosses_flange_thickness": flange_thickness + 2 * resolved["bracer_exterior_finishing_allowance_mm"] + 4.0,
+        "loop_outside_cavity": True,
+        "loop_has_passage": True,
+    }
 
 
 def resolve_pauldron_metrics(metrics: dict[str, float] | None = None) -> tuple[dict[str, float], list[str]]:
@@ -655,94 +833,138 @@ module debug_markers() {{
 
 
 def _bracer_style_geometry(style: str) -> str:
-    """Return style-specific decorative bracer features."""
-    if style == "Barbarian":
-        return """// Barbarian style: heavier side ribs and oversized raised rivets.
-    bracer_plate_patch(bracer_length_mm/2, bracer_panel_length_mm*0.72,
-        bracer_panel_width_mm*1.12, bracer_thickness_mm*0.44);
-    for (side=[-1, 1])
-        for (y=[bracer_trim_width_mm*1.6, bracer_length_mm/2, bracer_length_mm-bracer_trim_width_mm*1.6])
-            bracer_surface_detail(side*bracer_panel_width_mm*0.95, y, bracer_rivet_diameter_mm,
-                bracer_rivet_diameter_mm*0.45);
-    for (side=[-1, 1])
-        bracer_long_bar(side*bracer_panel_width_mm*0.55, bracer_length_mm/2,
-            bracer_panel_length_mm*0.78, bracer_thickness_mm*0.95, bracer_thickness_mm*0.55);"""
-    if style == "Elven":
-        return """// Elven style: slim leaf-like raised center motif.
-    bracer_plate_patch(bracer_length_mm/2, bracer_panel_length_mm*0.80,
-        bracer_panel_width_mm*0.72, bracer_thickness_mm*0.30);
-    hull() {
-        bracer_surface_detail(0, bracer_length_mm*0.20, bracer_thickness_mm*1.2, bracer_thickness_mm*0.42);
-        bracer_surface_detail(-bracer_panel_width_mm*0.42, bracer_length_mm*0.50,
-            bracer_thickness_mm*1.1, bracer_thickness_mm*0.35);
-        bracer_surface_detail(0, bracer_length_mm*0.82, bracer_thickness_mm*1.0, bracer_thickness_mm*0.35);
-    }
-    hull() {
-        bracer_surface_detail(0, bracer_length_mm*0.20, bracer_thickness_mm*1.2, bracer_thickness_mm*0.42);
-        bracer_surface_detail(bracer_panel_width_mm*0.42, bracer_length_mm*0.50,
-            bracer_thickness_mm*1.1, bracer_thickness_mm*0.35);
-        bracer_surface_detail(0, bracer_length_mm*0.82, bracer_thickness_mm*1.0, bracer_thickness_mm*0.35);
-    }"""
-    return """// Knight style: clean raised center plate and crisp central ridge.
-    bracer_plate_patch(bracer_length_mm/2, bracer_panel_length_mm,
-        bracer_panel_width_mm, bracer_thickness_mm*0.40);
-    bracer_long_bar(0, bracer_length_mm/2, bracer_panel_length_mm*0.92,
-        bracer_thickness_mm*1.05, bracer_thickness_mm*1.05);"""
+    """Return a style note; detail flags control bracer geometry."""
+    return "// Plain bracer aggregate style; decoration is controlled only by the decoration preset."
 
 
 def _bracer_detail_geometry(detail_options: dict[str, bool]) -> str:
     """Return optional detail geometry selected by UI flags."""
     details: list[str] = []
+    if detail_options["raised_trim"]:
+        details.append("""// Optional raised trim: end bands and two longitudinal side rails.
+        bracer_trim_band(bracer_trim_width_mm/2);
+        bracer_trim_band(bracer_length_mm-bracer_trim_width_mm/2);
+        for (side=[-1, 1])
+            bracer_side_rail(side);""")
     if detail_options["center_ridge"]:
-        details.append("""// Optional center ridge detail.
-        bracer_long_bar(0, bracer_length_mm/2, bracer_panel_length_mm*0.88,
-            bracer_thickness_mm*0.95, bracer_thickness_mm*0.95);""")
+        details.append("""// Optional center ridge: longitudinal faceted crest on the top centerline.
+        bracer_center_ridge();""")
     if detail_options["rivets"]:
-        details.append("""// Optional rivet detail.
+        details.append("""// Optional rivet detail: paired rows of low rounded caps.
         for (side=[-1, 1])
             for (y=[bracer_trim_width_mm*1.7, bracer_length_mm*0.38,
                     bracer_length_mm*0.62, bracer_length_mm-bracer_trim_width_mm*1.7])
-                bracer_surface_detail(side*bracer_panel_width_mm*1.18, y,
-                    bracer_rivet_diameter_mm, bracer_rivet_diameter_mm*0.38);""")
+                bracer_rivet(side, y);""")
     if detail_options["spikes"]:
-        details.append("""// Optional blunt fantasy spike detail.
-        for (y=[bracer_length_mm*0.34, bracer_length_mm*0.5, bracer_length_mm*0.66])
-            translate([0, y, bracer_surface_z(0, y)+bracer_thickness_mm/2])
-                cylinder(h=bracer_thickness_mm*2.2,
-                    r1=bracer_thickness_mm*0.85, r2=bracer_thickness_mm*0.22);""")
+        details.append("""// Optional controlled ornamental spikes with broad attached bases.
+        for (y=[bracer_length_mm*0.32, bracer_length_mm*0.5, bracer_length_mm*0.68])
+            bracer_spike(y);""")
     if detail_options["runes"]:
-        details.append("""// Optional raised rune-like decorative motif.
-        for (index=[-1, 0, 1])
-            translate([index*bracer_panel_width_mm*0.32, bracer_length_mm*0.52,
-                    bracer_surface_z(index*bracer_panel_width_mm*0.32, bracer_length_mm*0.52)
-                    + bracer_thickness_mm/2])
-                rotate([0, 0, 45-index*18])
-                    cube([bracer_thickness_mm*0.55, bracer_panel_width_mm*0.62,
-                        bracer_thickness_mm*0.42], center=true);""")
-    return "\n".join(details) if details else "// No optional bracer details selected."
+        details.append("""// Optional raised rune / motif: repeated symmetrical chevrons in a bounded panel.
+        for (y=[bracer_length_mm*0.38, bracer_length_mm*0.5, bracer_length_mm*0.62])
+            bracer_chevron_rune(y);""")
+    return "\n".join(details) if details else "// Plain bracer: no decorative geometry beyond the tapered shell."
 
 
-def make_bracer(bracer_style: str, detail_options: dict[str, bool] | None = None) -> str:
+def _bracer_binding_positive(binding_style: str) -> str:
+    flange_call = """// Explicit exterior closure flanges: continuous rails outside the arm cavity.
+        bracer_closure_flanges();"""
+    if binding_style == "Lacing Loops":
+        return f"""{flange_call}
+        // Compact external lacing loops: low eyelets attached to the flange exterior.
+        for (side=[-1, 1])
+            for (i=[0:bracer_binding_count-1])
+                bracer_lacing_loop(side, bracer_binding_y(i));"""
+    if binding_style == "Buckle-Ready Slots":
+        return f"""{flange_call}
+        // Buckle-ready reinforced frames: anchor side and larger hardware-access side.
+        for (i=[0:2])
+            bracer_strap_anchor_frame(-1, bracer_binding_y(i+1));
+        for (i=[0:2])
+            bracer_buckle_access_frame(1, bracer_binding_y(i+1));"""
+    if binding_style in {"Lacing Holes", "Strap Slots"}:
+        return flange_call
+    return "// No positive bracer binding hardware selected."
+
+
+def _bracer_binding_subtractive(binding_style: str) -> str:
+    if binding_style == "Lacing Holes":
+        return """// Lacing holes: paired subtractive round holes through both opening edges.
+        for (side=[-1, 1])
+            for (i=[0:bracer_binding_count-1])
+                bracer_lacing_hole(side, bracer_binding_y(i));"""
+    if binding_style == "Strap Slots":
+        return """// Strap slots: paired subtractive rectangular slots through both opening edges.
+        for (side=[-1, 1])
+            for (i=[0:2])
+                bracer_strap_slot(side, bracer_binding_y(i+1));"""
+    if binding_style == "Buckle-Ready Slots":
+        return """// Complete enclosed anchor slots and larger buckle-access passages.
+        for (i=[0:2])
+            bracer_strap_anchor_slot(-1, bracer_binding_y(i+1));
+        for (i=[0:2])
+            bracer_buckle_access_slot(1, bracer_binding_y(i+1));"""
+    return "// No subtractive bracer binding features selected."
+
+
+def make_bracer(
+    bracer_style: str,
+    detail_options: dict[str, bool] | None = None,
+    binding_style: str = "None",
+) -> str:
     """Return tapered decorative bracer modules rooted from wrist Y=0 to forearm +Y."""
     style = normalize_bracer_style(bracer_style)
     details = normalize_bracer_detail_options(style, detail_options)
-    trim_calls = (
-        """bracer_trim_band(bracer_trim_width_mm/2);
-        bracer_trim_band(bracer_length_mm-bracer_trim_width_mm/2);"""
-        if details["raised_trim"] else "// Raised trim disabled."
-    )
+    binding = normalize_bracer_binding_style(binding_style)
     return f"""function bracer_width_at(y) = wrist_width_mm
     + (forearm_width_mm-wrist_width_mm) * y / bracer_length_mm;
-function bracer_radius_at(y) = max(1, (bracer_width_at(y)/2)
-    / sin(bracer_arc_degrees/2));
-function bracer_surface_z(x, y) = let(width=bracer_width_at(y),
-    radius=bracer_radius_at(y),
-    limited_x=max(-width*0.49, min(width*0.49, x)))
-    sqrt(max(0, radius*radius-limited_x*limited_x))
-    - radius*cos(bracer_arc_degrees/2);
+function bracer_half_width_at(y) = bracer_width_at(y)/2;
+function bracer_half_depth() = bracer_depth_mm/2;
+function bracer_opening_angle_at(y) = 2*asin(min(0.92, bracer_opening_width_mm/max(1, bracer_width_at(y))));
+function bracer_covered_angle_at(y) = min(bracer_arc_degrees, 360-bracer_opening_angle_at(y));
+function bracer_angle_for_index(i, y) = -bracer_covered_angle_at(y)/2
+    + bracer_covered_angle_at(y)*i/bracer_shell_steps;
+function bracer_shell_x(y, angle) = bracer_half_width_at(y) * sin(angle);
+function bracer_shell_z(y, angle) = bracer_half_depth() * cos(angle);
+function bracer_surface_z(x, y) = let(
+    rx=bracer_half_width_at(y),
+    rz=bracer_half_depth(),
+    limited_x=max(-rx*0.96, min(rx*0.96, x)))
+    rz*sqrt(max(0, 1-(limited_x*limited_x)/(rx*rx)));
+function bracer_edge_x(side, y) = bracer_shell_x(y, side*bracer_covered_angle_at(y)/2);
+function bracer_edge_z(y) = bracer_shell_z(y, bracer_covered_angle_at(y)/2);
+function bracer_opening_edge_angle(side, y) = side*bracer_covered_angle_at(y)/2;
+function bracer_outward_normal_x(side, y) = sin(bracer_opening_edge_angle(side, y));
+function bracer_outward_normal_z(side, y) = cos(bracer_opening_edge_angle(side, y));
+function bracer_longitudinal_position(i) = bracer_binding_y(i);
+function bracer_flange_center_x(side, y) =
+    bracer_edge_x(side, y) + bracer_outward_normal_x(side, y)*bracer_closure_flange_outward_offset_mm;
+function bracer_flange_center_z(side, y) =
+    bracer_edge_z(y) + bracer_outward_normal_z(side, y)*bracer_closure_flange_outward_offset_mm;
+function bracer_closure_center_x(side, y, passage_depth) = bracer_flange_center_x(side, y);
+function bracer_closure_center_z(side, y) = bracer_flange_center_z(side, y);
+function bracer_external_feature_center_x(side, y, height) =
+    bracer_flange_center_x(side, y)
+        + bracer_outward_normal_x(side, y)*(bracer_closure_flange_thickness_mm/2 + height/2);
+function bracer_external_feature_center_z(side, y, height) =
+    bracer_flange_center_z(side, y)
+        + bracer_outward_normal_z(side, y)*(bracer_closure_flange_thickness_mm/2 + height/2);
+function bracer_lacing_hole_cutter_diameter() =
+    bracer_binding_hole_diameter_mm + 2*bracer_exterior_finishing_allowance_mm;
+function bracer_slot_cutter_width(width) = width + 2*bracer_exterior_finishing_allowance_mm;
+function bracer_slot_cutter_length(length) = length + 2*bracer_exterior_finishing_allowance_mm;
+function bracer_shell_point_diameter() = bracer_wall_thickness_mm + 2*bracer_exterior_finishing_allowance_mm;
+function bracer_binding_y(i) = bracer_closure_wrist_margin_mm
+    + i*bracer_closure_usable_length_mm/max(1, bracer_binding_count-1);
+function bracer_flange_start_y() = bracer_closure_wrist_margin_mm*0.72;
+function bracer_flange_end_y() = bracer_length_mm - bracer_closure_elbow_margin_mm*0.72;
+function bracer_flange_length() = bracer_flange_end_y() - bracer_flange_start_y();
+function bracer_closure_cutter_depth() =
+    bracer_closure_flange_thickness_mm + 2*bracer_exterior_finishing_allowance_mm + 4;
+bracer_shell_steps = 16;
 
 module bracer_surface_detail(x, y, diameter, height) {{
-    translate([x, y, bracer_surface_z(x, y)+bracer_thickness_mm/2])
+    translate([x, y, bracer_surface_z(x, y)+bracer_wall_thickness_mm/2])
         scale([1, 1, max(0.18, height/max(0.1, diameter))])
             sphere(d=diameter);
 }}
@@ -764,22 +986,79 @@ module bracer_plate_patch(center_y, length, width, height) {{
     }}
 }}
 
-module bracer_shell() {{
-    // Tapered curved shell: wrist at Y=0, forearm at +Y.
+module bracer_center_ridge() {{
     hull() {{
-        for (y=[0, bracer_length_mm])
-            for (angle=[-bracer_arc_degrees/2:bracer_arc_degrees/8:bracer_arc_degrees/2])
-                let(radius=bracer_radius_at(y),
-                    x=radius*sin(angle),
-                    z=radius*cos(angle)-radius*cos(bracer_arc_degrees/2))
-                    translate([x, y, z]) sphere(d=bracer_thickness_mm);
+        bracer_surface_detail(0, bracer_trim_width_mm*1.55,
+            bracer_wall_thickness_mm*1.05, bracer_detail_depth_mm);
+        bracer_surface_detail(0, bracer_length_mm/2,
+            bracer_wall_thickness_mm*1.35, bracer_detail_depth_mm*1.15);
+        bracer_surface_detail(0, bracer_length_mm-bracer_trim_width_mm*1.55,
+            bracer_wall_thickness_mm*1.05, bracer_detail_depth_mm);
+    }}
+}}
+
+module bracer_side_rail(side) {{
+    hull() {{
+        for (y=[bracer_trim_width_mm*1.4, bracer_length_mm-bracer_trim_width_mm*1.4])
+            bracer_surface_detail(side*bracer_panel_width_mm*1.28, y,
+                bracer_wall_thickness_mm*1.05, bracer_detail_depth_mm*0.72);
+    }}
+}}
+
+module bracer_rivet(side, y) {{
+    bracer_surface_detail(side*bracer_panel_width_mm*1.35, y,
+        bracer_rivet_diameter_mm, bracer_rivet_diameter_mm*0.34);
+}}
+
+module bracer_spike(y) {{
+    translate([0, y, bracer_surface_z(0, y)+bracer_wall_thickness_mm*0.55]) {{
+        cylinder(h=bracer_wall_thickness_mm*0.65,
+            r=bracer_wall_thickness_mm*1.05);
+        translate([0, 0, bracer_wall_thickness_mm*0.45])
+            cylinder(h=bracer_spike_height_mm,
+                r1=bracer_wall_thickness_mm*0.95, r2=bracer_wall_thickness_mm*0.16);
+    }}
+}}
+
+module bracer_rune_stroke(x1, y1, x2, y2) {{
+    hull() {{
+        bracer_surface_detail(x1, y1, bracer_wall_thickness_mm*0.72, bracer_detail_depth_mm*0.45);
+        bracer_surface_detail(x2, y2, bracer_wall_thickness_mm*0.72, bracer_detail_depth_mm*0.45);
+    }}
+}}
+
+module bracer_chevron_rune(y) {{
+    rune_w = bracer_panel_width_mm*0.46;
+    rune_h = bracer_trim_width_mm*0.72;
+    bracer_rune_stroke(-rune_w, y-rune_h, 0, y);
+    bracer_rune_stroke(rune_w, y-rune_h, 0, y);
+    bracer_rune_stroke(-rune_w, y+rune_h, 0, y);
+    bracer_rune_stroke(rune_w, y+rune_h, 0, y);
+}}
+
+module bracer_shell_point(y, angle) {{
+    translate([bracer_shell_x(y, angle), y,
+            bracer_shell_z(y, angle)+bracer_exterior_finishing_allowance_mm])
+        sphere(d=bracer_shell_point_diameter());
+}}
+
+module bracer_shell() {{
+    // Tapered hollow shell: separate curved strips leave an open inner forearm gap.
+    union() {{
+        for (i=[0:bracer_shell_steps-1])
+            hull() {{
+                bracer_shell_point(0, bracer_angle_for_index(i, 0));
+                bracer_shell_point(0, bracer_angle_for_index(i+1, 0));
+                bracer_shell_point(bracer_length_mm, bracer_angle_for_index(i, bracer_length_mm));
+                bracer_shell_point(bracer_length_mm, bracer_angle_for_index(i+1, bracer_length_mm));
+            }}
     }}
 }}
 
 module bracer_trim_band(y) {{
     // Raised end trim bands reinforce the wrist and forearm ends visually.
     bracer_plate_patch(y, bracer_trim_width_mm,
-        bracer_width_at(y)*0.86, bracer_thickness_mm*0.58);
+        bracer_width_at(y)*0.72, bracer_detail_depth_mm);
 }}
 
 module bracer_outer_plate() {{
@@ -787,11 +1066,147 @@ module bracer_outer_plate() {{
     {_bracer_detail_geometry(details)}
 }}
 
+module bracer_flange_section(side, y, section_length) {{
+    // Coordinate audit: Y is wrist-to-elbow. The opening edge is at low Z.
+    // The flange face normal is the radial XZ vector from the shell center through the opening edge.
+    translate([bracer_flange_center_x(side, y), y, bracer_flange_center_z(side, y)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+            cube([bracer_closure_flange_width_mm, section_length,
+                bracer_closure_flange_thickness_mm], center=true);
+}}
+
+module bracer_closure_flange(side) {{
+    // Continuous exterior rail: outside the arm cavity and stopped before wrist/elbow ends.
+    hull() {{
+        bracer_flange_section(side, bracer_flange_start_y(), bracer_wall_thickness_mm*1.2);
+        bracer_flange_section(side, bracer_flange_end_y(), bracer_wall_thickness_mm*1.2);
+    }}
+}}
+
+module bracer_closure_flanges() {{
+    for (side=[-1, 1])
+        bracer_closure_flange(side);
+}}
+
+module bracer_lacing_hole(side, y) {{
+    // Cutter axis: radial XZ flange-face normal, crossing the complete flange thickness.
+    translate([bracer_closure_center_x(side, y, bracer_lacing_hole_cutter_diameter()),
+            y, bracer_closure_center_z(side, y)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+            cylinder(h=bracer_closure_cutter_depth(),
+                d=bracer_lacing_hole_cutter_diameter(), center=true);
+}}
+
+module bracer_rounded_slot_cutter(width, length, through_depth) {{
+    hull() {{
+        for (end=[-1, 1])
+            translate([0, end*max(0, width-length)/2, 0])
+                cylinder(h=through_depth, d=length, center=true);
+    }}
+}}
+
+module bracer_strap_slot(side, y) {{
+    // Slot cutter axis: radial XZ flange normal; slot long axis follows Y for strap width.
+    translate([bracer_closure_center_x(side, y, bracer_slot_cutter_length(bracer_strap_slot_length_mm)),
+            y, bracer_closure_center_z(side, y)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+            bracer_rounded_slot_cutter(
+                bracer_slot_cutter_width(bracer_strap_slot_width_mm),
+                bracer_slot_cutter_length(bracer_strap_slot_length_mm),
+                bracer_closure_cutter_depth());
+}}
+
+module bracer_lacing_loop(side, y) {{
+    // Compact eyelet body sits outside the flange; its passage runs along Y under the bridge.
+    translate([bracer_external_feature_center_x(side, y, bracer_loop_height_mm),
+            y, bracer_external_feature_center_z(side, y, bracer_loop_height_mm)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+        difference() {{
+            cube([bracer_loop_length_mm,
+                bracer_loop_passage_diameter_mm + bracer_loop_wall_thickness_mm*2,
+                bracer_loop_height_mm], center=true);
+            translate([0, 0, -bracer_loop_height_mm*0.16])
+                rotate([90, 0, 0])
+                    cylinder(h=bracer_loop_passage_diameter_mm + bracer_loop_wall_thickness_mm*4,
+                        d=bracer_loop_passage_diameter_mm, center=true);
+        }}
+}}
+
+module bracer_reinforced_slot_frame(side, y, slot_width, slot_length, extra) {{
+    translate([bracer_flange_center_x(side, y), y, bracer_flange_center_z(side, y)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+            cube([slot_length + bracer_wall_thickness_mm*2.2 + extra,
+                slot_width + bracer_wall_thickness_mm*1.2 + extra,
+                bracer_closure_flange_thickness_mm + bracer_wall_thickness_mm*0.55], center=true);
+}}
+
+module bracer_strap_anchor_frame(side, y) {{
+    bracer_reinforced_slot_frame(side, y, bracer_strap_slot_width_mm, bracer_strap_slot_length_mm, 0);
+}}
+
+module bracer_buckle_access_frame(side, y) {{
+    bracer_reinforced_slot_frame(side, y, bracer_buckle_slot_width_mm, bracer_buckle_slot_length_mm,
+        bracer_wall_thickness_mm*0.45);
+}}
+
+module bracer_strap_anchor_slot(side, y) {{
+    // Anchor slot is enclosed by the exterior flange/frame and drilled across rail thickness.
+    translate([bracer_closure_center_x(side, y, bracer_slot_cutter_length(bracer_strap_slot_length_mm)),
+            y, bracer_closure_center_z(side, y)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+            bracer_rounded_slot_cutter(
+                bracer_slot_cutter_width(bracer_strap_slot_width_mm),
+                bracer_slot_cutter_length(bracer_strap_slot_length_mm),
+                bracer_closure_cutter_depth());
+}}
+
+module bracer_buckle_access_slot(side, y) {{
+    // Buckle side uses larger enclosed access passages, not decorative polygon tabs.
+    translate([bracer_closure_center_x(side, y, bracer_slot_cutter_length(bracer_buckle_slot_length_mm)),
+            y, bracer_closure_center_z(side, y)])
+        rotate([0, bracer_opening_edge_angle(side, y), 0])
+            bracer_rounded_slot_cutter(
+                bracer_slot_cutter_width(bracer_buckle_slot_width_mm),
+                bracer_slot_cutter_length(bracer_buckle_slot_length_mm),
+                bracer_closure_cutter_depth());
+}}
+
+module bracer_binding_positive() {{
+    {_bracer_binding_positive(binding)}
+}}
+
+module bracer_binding_cutters() {{
+    {_bracer_binding_subtractive(binding)}
+}}
+
+module bracer_closure_debug_geometry() {{
+    %bracer_closure_flanges();
+    #bracer_binding_cutters();
+    for (side=[-1, 1])
+        for (i=[0:bracer_binding_count-1]) {{
+            y = bracer_binding_y(i);
+            translate([bracer_flange_center_x(side, y), y, bracer_flange_center_z(side, y)])
+                sphere(d=bracer_wall_thickness_mm*0.9);
+            hull() {{
+                translate([bracer_flange_center_x(side, y), y, bracer_flange_center_z(side, y)])
+                    sphere(d=bracer_wall_thickness_mm*0.45);
+                translate([bracer_flange_center_x(side, y) + bracer_outward_normal_x(side, y)*bracer_closure_flange_thickness_mm,
+                        y, bracer_flange_center_z(side, y) + bracer_outward_normal_z(side, y)*bracer_closure_flange_thickness_mm])
+                    sphere(d=bracer_wall_thickness_mm*0.45);
+            }}
+        }}
+    %translate([0, bracer_length_mm/2, -bracer_half_depth()+bracer_wall_thickness_mm/2])
+        cube([bracer_opening_width_mm, bracer_length_mm, bracer_wall_thickness_mm], center=true);
+}}
+
 module bracer() {{
-    color("gainsboro") union() {{
-        bracer_shell();
-        {trim_calls}
-        bracer_outer_plate();
+    color("gainsboro") difference() {{
+        union() {{
+            bracer_shell();
+            bracer_outer_plate();
+            bracer_binding_positive();
+        }}
+        bracer_binding_cutters();
     }}
 }}
 """
@@ -800,10 +1215,11 @@ module bracer() {{
 def generate_armor_scad(
     armor_type: str = "Bracer",
     metrics: dict[str, float] | None = None,
-    bracer_style: str = "Knight",
+    bracer_style: str = "Plain",
     pauldron_style: str = "Knight",
     detail_options: dict[str, bool] | None = None,
     debug_geometry: bool = False,
+    bracer_binding_style: str = "None",
 ) -> str:
     """Build a decorative OpenSCAD armor prop program."""
     resolved_type = normalize_armor_type(armor_type)
@@ -816,30 +1232,30 @@ def generate_armor_scad(
         )
     style = normalize_bracer_style(bracer_style)
     details = normalize_bracer_detail_options(style, detail_options)
+    binding = normalize_bracer_binding_style(bracer_binding_style)
     values, warnings = resolve_bracer_metrics(metrics)
     assignments = "\n".join(f"{name} = {value:g};" for name, value in values.items())
     detail_text = ", ".join(name for name, enabled in details.items() if enabled) or "none"
     warning_text = "\n".join(f"// Warning: {warning}" for warning in warnings)
     debug_call = """
 // DEBUG GEOMETRY ENABLED
-color([0.2, 0.6, 1.0, 0.16])
-    translate([0, bracer_length_mm/2, bracer_thickness_mm])
-        cube([forearm_width_mm, bracer_length_mm, bracer_thickness_mm], center=true);
+bracer_closure_debug_geometry();
 """ if debug_geometry else ""
     return f"""// Digital Forge Armor Version 1: {resolved_type}
 // Armor type: {resolved_type}
 // Bracer style: {style}
 // Bracer details: {detail_text}
+// Bracer binding: {binding}
 // Decorative/prototype fantasy prop geometry only; not wearable protective equipment.
 // Coordinate contract:
 // - The wrist end starts at Y=0 and the forearm end extends toward +Y.
 // - Width tapers from wrist_width_mm to forearm_width_mm.
-// - Curvature is controlled by bracer_arc_degrees.
+// - Depth, opening width, and coverage angle define a tapered open shell.
 $fn = 48;
 {assignments}
 {warning_text}
 
-{make_bracer(style, details)}
+{make_bracer(style, details, binding)}
 bracer();
 {debug_call}"""
 

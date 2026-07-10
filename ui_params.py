@@ -6,6 +6,7 @@ from scad_generator import (
     DEFAULT_BRACER_METRICS,
     DEFAULT_PAULDRON_METRICS,
     normalize_armor_type,
+    normalize_bracer_binding_style,
     normalize_bracer_detail_options,
     normalize_bracer_style,
     normalize_pauldron_detail_options,
@@ -26,9 +27,10 @@ def normalize_generation_category(category: str | None = None) -> str:
 
 def build_bracer_generation_params(
     armor_type: str = "Bracer",
-    bracer_style: str = "Knight",
+    bracer_style: str = "Plain",
     metrics: dict[str, float] | None = None,
     detail_options: dict[str, bool] | None = None,
+    bracer_binding_style: str = "None",
 ) -> tuple[dict[str, object], list[str]]:
     """Return normalized armor generation kwargs and non-fatal geometry warnings."""
     style = normalize_bracer_style(bracer_style)
@@ -38,7 +40,54 @@ def build_bracer_generation_params(
         "bracer_style": style,
         "metrics": resolved_metrics,
         "detail_options": normalize_bracer_detail_options(style, detail_options),
+        "bracer_binding_style": normalize_bracer_binding_style(bracer_binding_style),
     }, warnings
+
+
+BRACER_DECORATION_PRESETS = {
+    "Plain": {
+        "raised_trim": False,
+        "rivets": False,
+        "center_ridge": False,
+        "spikes": False,
+        "runes": False,
+    },
+    "Raised Trim": {
+        "raised_trim": True,
+        "rivets": False,
+        "center_ridge": False,
+        "spikes": False,
+        "runes": False,
+    },
+    "Rivets": {
+        "raised_trim": True,
+        "rivets": True,
+        "center_ridge": False,
+        "spikes": False,
+        "runes": False,
+    },
+    "Center Ridge": {
+        "raised_trim": False,
+        "rivets": False,
+        "center_ridge": True,
+        "spikes": False,
+        "runes": False,
+    },
+    "Spikes": {
+        "raised_trim": False,
+        "rivets": False,
+        "center_ridge": True,
+        "spikes": True,
+        "runes": False,
+    },
+    "Runes / Motif": {
+        "raised_trim": False,
+        "rivets": False,
+        "center_ridge": False,
+        "spikes": False,
+        "runes": True,
+    },
+}
 
 
 def build_pauldron_generation_params(

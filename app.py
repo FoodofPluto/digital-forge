@@ -12,7 +12,7 @@ from realism_rules import check_realism
 from scad_generator import (
     ARMOR_TYPES,
     BLADE_STYLES,
-    BRACER_STYLES,
+    BRACER_BINDING_STYLES,
     DEFAULT_BRACER_METRICS,
     DEFAULT_PAULDRON_METRICS,
     COMPONENT_NAMES,
@@ -27,12 +27,12 @@ from scad_generator import (
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from ui_params import (
+    BRACER_DECORATION_PRESETS,
     GENERATION_CATEGORIES,
     build_bracer_generation_params,
     build_pauldron_generation_params,
     enabled_bracer_detail_labels,
     enabled_pauldron_detail_labels,
-    normalize_bracer_detail_options,
     normalize_pauldron_detail_options,
 )
 
@@ -253,15 +253,14 @@ else:
     st.caption("Armor models are decorative/prototype fantasy prop geometry only, not wearable protective equipment.")
 
     if armor_type == "Bracer":
-        bracer_style = st.selectbox("Bracer style", BRACER_STYLES)
-        st.subheader("Bracer dimensions")
+        bracer_style = "Plain"
+        st.subheader("Bracer Dimensions")
         bracer_columns = st.columns(3)
         bracer_specs = {
             "bracer_length_mm": (60.0, 420.0, DEFAULT_BRACER_METRICS["bracer_length_mm"], 1.0),
             "wrist_width_mm": (35.0, 180.0, DEFAULT_BRACER_METRICS["wrist_width_mm"], 1.0),
             "forearm_width_mm": (45.0, 240.0, DEFAULT_BRACER_METRICS["forearm_width_mm"], 1.0),
-            "bracer_thickness_mm": (2.4, 12.0, DEFAULT_BRACER_METRICS["bracer_thickness_mm"], 0.2),
-            "bracer_arc_degrees": (80.0, 220.0, DEFAULT_BRACER_METRICS["bracer_arc_degrees"], 1.0),
+            "bracer_depth_mm": (24.0, 140.0, DEFAULT_BRACER_METRICS["bracer_depth_mm"], 1.0),
         }
         bracer_metrics = {}
         for index, (name, spec) in enumerate(bracer_specs.items()):
@@ -276,29 +275,75 @@ else:
                     key=f"armor_{name}",
                 )
 
-        st.subheader("Bracer details")
-        default_details = normalize_bracer_detail_options(bracer_style)
-        detail_cols = st.columns(5)
-        detail_options = {}
-        labels = {
-            "raised_trim": "Raised trim",
-            "rivets": "Rivets",
-            "center_ridge": "Center ridge",
-            "spikes": "Spikes",
-            "runes": "Runes / motif",
-        }
-        for column, name in zip(detail_cols, labels):
-            with column:
-                detail_options[name] = st.checkbox(labels[name], value=default_details[name], key=f"armor_{bracer_style}_{name}")
+        st.subheader("Shell and Opening")
+        shell_col1, shell_col2, shell_col3 = st.columns(3)
+        with shell_col1:
+            bracer_metrics["bracer_wall_thickness_mm"] = st.number_input(
+                "Wall thickness (mm)", 2.4, 12.0,
+                float(DEFAULT_BRACER_METRICS["bracer_wall_thickness_mm"]), 0.2,
+                key="armor_bracer_wall_thickness_mm",
+                help="Printable shell wall; generation clamps it inside the outer profile.",
+            )
+        with shell_col2:
+            bracer_metrics["bracer_opening_width_mm"] = st.number_input(
+                "Opening width (mm)", 16.0, 120.0,
+                float(DEFAULT_BRACER_METRICS["bracer_opening_width_mm"]), 1.0,
+                key="armor_bracer_opening_width_mm",
+                help="Gap along the inner forearm so the bracer reads as wearable.",
+            )
+        with shell_col3:
+            bracer_metrics["bracer_arc_degrees"] = st.number_input(
+                "Coverage angle (deg)", 120.0, 260.0,
+                float(DEFAULT_BRACER_METRICS["bracer_arc_degrees"]), 1.0,
+                key="armor_bracer_arc_degrees",
+                help="How far the shell wraps around the forearm before the opening.",
+            )
+        bracer_metrics["bracer_exterior_finishing_allowance_mm"] = st.slider(
+            "Exterior Finishing Allowance (mm)",
+            0.0,
+            1.5,
+            float(DEFAULT_BRACER_METRICS["bracer_exterior_finishing_allowance_mm"]),
+            0.1,
+            key="armor_bracer_exterior_finishing_allowance_mm",
+            help="Adds sandable stock to exterior shell surfaces without reducing the arm cavity or closure passages.",
+        )
+
+        st.subheader("Decoration Preset")
+        preset_names = tuple(BRACER_DECORATION_PRESETS)
+        default_preset = "Plain"
+        decoration_preset = st.selectbox(
+            "Preset",
+            preset_names,
+            index=preset_names.index(default_preset),
+            help="Choose one deliberate bracer decoration layout.",
+        )
+        detail_options = dict(BRACER_DECORATION_PRESETS[decoration_preset])
+
+        st.subheader("Decoration Settings")
+        bracer_metrics["bracer_detail_depth_mm"] = st.number_input(
+            "Detail height (mm)", 0.8, 6.0,
+            float(DEFAULT_BRACER_METRICS["bracer_detail_depth_mm"]), 0.1,
+            key="armor_bracer_detail_depth_mm",
+            help="Raised trim, ridge, rivet, and motif height; clamped relative to wall thickness.",
+            disabled=decoration_preset == "Plain",
+        )
+
+        st.subheader("Binding / Closure")
+        bracer_binding_style = st.selectbox(
+            "Closure style",
+            BRACER_BINDING_STYLES,
+            help="Optional paired holes, true loops, strap slots, or buckle-ready strap hardware passages.",
+        )
 
         armor_params, armor_warnings = build_bracer_generation_params(
-            armor_type, bracer_style, bracer_metrics, detail_options
+            armor_type, bracer_style, bracer_metrics, detail_options, bracer_binding_style
         )
         armor_audit = audit_bracer_geometry(
             armor_params["metrics"],
             armor_params["armor_type"],
             armor_params["bracer_style"],
             armor_params["detail_options"],
+            armor_params["bracer_binding_style"],
         )
         enabled_details = enabled_bracer_detail_labels(armor_params["detail_options"])
     else:

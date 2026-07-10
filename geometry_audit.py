@@ -17,6 +17,7 @@ from scad_generator import (
     disk_guard_diameter,
     guard_should_rotate_90,
     normalize_armor_type,
+    normalize_bracer_binding_style,
     normalize_bracer_detail_options,
     normalize_bracer_style,
     normalize_component_visibility,
@@ -61,8 +62,9 @@ def _number(metrics: dict[str, float], name: str) -> float:
 def audit_bracer_geometry(
     metrics: dict[str, float],
     armor_type: str = "Bracer",
-    bracer_style: str = "Knight",
+    bracer_style: str = "Plain",
     detail_options: dict[str, bool] | None = None,
+    bracer_binding_style: str = "None",
 ) -> dict[str, list[str]]:
     """Return advisory checks for decorative bracer geometry."""
     warnings: list[str] = []
@@ -72,13 +74,14 @@ def audit_bracer_geometry(
     normalized_type = normalize_armor_type(armor_type)
     style = normalize_bracer_style(bracer_style)
     details = normalize_bracer_detail_options(style, detail_options)
+    binding = normalize_bracer_binding_style(bracer_binding_style)
     resolved, clamp_warnings = resolve_bracer_metrics(metrics)
 
     info.append("Armor mode: Bracer decorative/prototype geometry only.")
     if armor_type not in ARMOR_TYPES:
         warnings.append(f"Unsupported armor type '{armor_type}' will be generated as Bracer.")
     if bracer_style not in BRACER_STYLES:
-        warnings.append(f"Unsupported bracer style '{bracer_style}' will use Knight.")
+        warnings.append(f"Unsupported bracer style '{bracer_style}' will use Plain.")
     if detail_options:
         ignored = sorted(set(detail_options) - set(BRACER_DETAIL_OPTIONS))
         for name in ignored:
@@ -87,14 +90,19 @@ def audit_bracer_geometry(
 
     requested_wrist = _number(metrics, "wrist_width_mm")
     requested_forearm = _number(metrics, "forearm_width_mm")
+    requested_thickness = _number(metrics, "bracer_wall_thickness_mm") or _number(metrics, "bracer_thickness_mm")
     if requested_wrist > requested_forearm > 0:
         warnings.append("Wrist width is larger than forearm width; generation clamps it to preserve outward taper.")
 
     length = resolved["bracer_length_mm"]
     wrist = resolved["wrist_width_mm"]
     forearm = resolved["forearm_width_mm"]
-    thickness = resolved["bracer_thickness_mm"]
+    depth = resolved["bracer_depth_mm"]
+    thickness = resolved["bracer_wall_thickness_mm"]
     arc = resolved["bracer_arc_degrees"]
+    opening = resolved["bracer_opening_width_mm"]
+    detail_depth = resolved["bracer_detail_depth_mm"]
+    finishing_allowance = resolved["bracer_exterior_finishing_allowance_mm"]
     average_width = (wrist + forearm) / 2
     ratio = length / max(1.0, average_width)
 
@@ -103,9 +111,21 @@ def audit_bracer_geometry(
     else:
         passed.append("Bracer thickness is in the stable decorative prop range.")
 
+    if thickness >= min(wrist, forearm, depth) / 2:
+        warnings.append("Inner cavity would be smaller than the shell wall; generation reduces wall thickness.")
+    else:
+        passed.append("Inner cavity remains larger than the shell wall thickness.")
+
+    if opening > min(wrist, forearm) - thickness * 5:
+        warnings.append("Opening is too wide for the selected wrist size and wall thickness.")
+    elif opening < thickness * 3:
+        warnings.append("Opening is narrow and may be hard to read as a wearable gap.")
+    else:
+        passed.append("Underside opening leaves material on both shell edges.")
+
     if arc > MAX_BRACER_ARC_DEGREES:
         warnings.append("Bracer curvature is high; preview may look nearly closed around the arm.")
-    elif arc < 95:
+    elif arc < 145:
         warnings.append("Bracer curvature is shallow; it may read more like a flat plate than a cuff.")
     else:
         passed.append("Bracer curvature stays in a readable cuff range.")
@@ -127,6 +147,8 @@ def audit_bracer_geometry(
     panel_width = resolved["bracer_panel_width_mm"]
     trim_width = resolved["bracer_trim_width_mm"]
     rivet_diameter = resolved["bracer_rivet_diameter_mm"]
+    spike_height = resolved["bracer_spike_height_mm"]
+    binding_margin = resolved["bracer_binding_margin_mm"]
     if panel_width > wrist * 0.72:
         warnings.append("Raised center panel is large relative to the wrist end.")
     else:
@@ -139,19 +161,70 @@ def audit_bracer_geometry(
         warnings.append("Rivet details are large relative to the bracer width.")
     elif details["rivets"]:
         passed.append("Rivet details are within the decorative size limit.")
-    if details["spikes"] and thickness * 2.2 > average_width * 0.16:
+    if details["spikes"] and (spike_height > depth * 0.28 or requested_thickness * 2.3 > depth * 0.28):
         warnings.append("Spike details may protrude too far for this bracer size.")
     elif details["spikes"]:
         passed.append("Spike details stay within the decorative protrusion limit.")
+    if details["runes"] and detail_depth > thickness:
+        warnings.append("Motif detail is deep relative to wall thickness.")
+    elif details["runes"]:
+        passed.append("Motif detail remains shallow and printable.")
+    if finishing_allowance > 0 and detail_depth <= finishing_allowance * 1.4 and any(details.values()):
+        warnings.append("Decoration may disappear under the selected finishing allowance.")
+    elif finishing_allowance > 0:
+        passed.append("Exterior finishing allowance leaves closure passages and inner cavity unchanged.")
+
+    if (details["rivets"] or details["spikes"] or details["runes"] or details["center_ridge"]) and panel_width > (min(wrist, forearm)-opening) * 0.9:
+        warnings.append("Decorative detail may intersect the underside opening; reduce detail width or opening width.")
+
+    if binding in {"Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots"}:
+        if binding_margin < trim_width:
+            warnings.append("Binding features are too close to the wrist or elbow end.")
+        else:
+            passed.append("Binding features stay away from the bracer ends.")
+        hole_diameter = resolved["bracer_binding_hole_diameter_mm"]
+        slot_length = resolved["bracer_strap_slot_length_mm"]
+        slot_width = resolved["bracer_strap_slot_width_mm"]
+        edge_margin = resolved["bracer_closure_edge_margin_mm"]
+        flange_width = resolved["bracer_closure_flange_width_mm"]
+        flange_thickness = resolved["bracer_closure_flange_thickness_mm"]
+        hole_flange_margin = (flange_width - hole_diameter) / 2
+        slot_flange_margin = (flange_width - slot_length) / 2
+        if hole_diameter > thickness * 1.8:
+            warnings.append("Binding holes are large relative to wall thickness.")
+        elif binding in {"Lacing Holes", "Lacing Loops"}:
+            passed.append("Lacing features use paired, printable spacing.")
+        if binding in {"Lacing Holes", "Lacing Loops"} and hole_flange_margin < edge_margin:
+            warnings.append("Lacing hole lacks complete material margin in the exterior closure flange.")
+        elif binding in {"Lacing Holes", "Lacing Loops"}:
+            passed.append("Lacing holes remain complete enclosed passages through exterior flanges.")
+        if binding in {"Strap Slots", "Buckle-Ready Slots"} and slot_flange_margin < edge_margin:
+            warnings.append("Strap slot lacks complete material margin in the exterior closure flange.")
+        elif binding in {"Strap Slots", "Buckle-Ready Slots"}:
+            passed.append("Strap slots remain complete enclosed passages through exterior flanges.")
+        if flange_thickness < max(thickness * 1.25, hole_diameter):
+            warnings.append("Closure flange is too thin for robust exterior passages.")
+        else:
+            passed.append("Closure flanges provide exterior material for the selected hardware.")
+        if binding == "Lacing Loops":
+            if resolved["bracer_loop_passage_diameter_mm"] < 3.2:
+                warnings.append("Loop passage is too small for reliable printing and finishing.")
+            if resolved["bracer_loop_wall_thickness_mm"] < max(1.8, thickness * 0.5):
+                warnings.append("Loop wall is too thin around the lacing passage.")
+            else:
+                passed.append("Lacing loops include printable wall thickness around an enclosed passage.")
+        if binding == "Buckle-Ready Slots":
+            if resolved["bracer_buckle_slot_width_mm"] <= slot_width:
+                warnings.append("Buckle-access opening is too small for the selected strap width.")
+            else:
+                passed.append("Buckle-ready access slots are larger than the strap-anchor slots.")
+    else:
+        passed.append("No closure hardware selected.")
 
     if normalized_type == "Bracer":
         passed.append("Armor type is supported.")
-    if style == "Knight":
-        passed.append("Knight style includes a clean raised center plate and ridge.")
-    elif style == "Barbarian":
-        passed.append("Barbarian style includes heavier side ribs and rivets.")
-    elif style == "Elven":
-        passed.append("Elven style includes a slim leaf-like raised motif.")
+    if style == "Plain":
+        passed.append("Plain bracer style uses no aggregate decoration preset.")
 
     return {"warnings": warnings, "info": info, "passes": passed}
 

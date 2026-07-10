@@ -10,6 +10,7 @@ from realism_rules import check_realism
 from scad_generator import (
     ARMOR_TYPES,
     BLADE_STYLES,
+    BRACER_BINDING_STYLES,
     BRACER_STYLES,
     PAULDRON_STYLES,
     GUARD_STYLES,
@@ -25,6 +26,7 @@ from scad_generator import (
     generate_scad,
     get_guard_rotation,
     has_visible_components,
+    bracer_closure_layout_metrics,
     resolve_bracer_metrics,
     resolve_pauldron_metrics,
     resolve_tang_details,
@@ -33,6 +35,7 @@ from scad_generator import (
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from showcase_presets import SHOWCASE_PRESETS, generate_showcase_scad, preset_metrics as showcase_metrics
 from ui_params import (
+    BRACER_DECORATION_PRESETS,
     DEFAULT_GENERATION_CATEGORY,
     GENERATION_CATEGORIES,
     build_bracer_generation_params,
@@ -45,6 +48,18 @@ from ui_params import (
 
 def preset_metrics(sword_type: str) -> dict[str, float]:
     return {name: spec["default"] for name, spec in SWORD_PRESETS[sword_type].items()}
+
+
+def bracer_shell_side_width(metrics: dict[str, float]) -> float:
+    return (min(metrics["wrist_width_mm"], metrics["forearm_width_mm"]) - metrics["bracer_opening_width_mm"]) / 2
+
+
+def bracer_passage_outer_bound(metrics: dict[str, float], passage_depth: float) -> float:
+    return (
+        metrics["bracer_closure_edge_margin_mm"]
+        + passage_depth
+        + metrics["bracer_exterior_finishing_allowance_mm"] * 2
+    )
 
 
 def test_presets_contain_all_required_metrics():
@@ -114,17 +129,25 @@ def test_bracer_generation_returns_valid_scad_text():
             "bracer_length_mm": 190,
             "wrist_width_mm": 72,
             "forearm_width_mm": 108,
+            "bracer_depth_mm": 52,
             "bracer_thickness_mm": 4.5,
             "bracer_arc_degrees": 150,
+            "bracer_opening_width_mm": 32,
         },
-        bracer_style="Knight",
+        bracer_style="Plain",
     )
     assert "Digital Forge Armor Version 1: Bracer" in scad
     assert "Decorative/prototype fantasy prop geometry only" in scad
     assert "bracer_length_mm = 190;" in scad
     assert "wrist_width_mm = 72;" in scad and "forearm_width_mm = 108;" in scad
+    assert "bracer_depth_mm = 52;" in scad
+    assert "bracer_opening_width_mm = 32;" in scad
     assert "function bracer_width_at(y)" in scad
+    assert "function bracer_opening_angle_at(y)" in scad
+    assert "function bracer_covered_angle_at(y)" in scad
     assert "module bracer_shell()" in scad
+    assert "Tapered hollow shell" in scad
+    assert "for (i=[0:bracer_shell_steps-1])" in scad
     assert "module bracer_trim_band" in scad
     assert "module bracer_outer_plate()" in scad
     assert "bracer();" in scad
@@ -162,7 +185,7 @@ def test_direct_pauldron_generator_matches_armor_route():
 
 def test_bracer_detail_options_control_optional_scad_features():
     scad = generate_armor_scad(
-        bracer_style="Knight",
+        bracer_style="Plain",
         detail_options={
             "raised_trim": False,
             "rivets": True,
@@ -172,10 +195,10 @@ def test_bracer_detail_options_control_optional_scad_features():
         },
     )
     assert "Bracer details: rivets, spikes, runes" in scad
-    assert "Raised trim disabled" in scad
-    assert "Optional rivet detail" in scad
-    assert "Optional blunt fantasy spike detail" in scad
-    assert "Optional raised rune-like decorative motif" in scad
+    assert "Optional rivet detail: paired rows of low rounded caps" in scad
+    assert "Optional controlled ornamental spikes" in scad
+    assert "Optional raised rune / motif" in scad
+    assert "Optional raised trim" not in scad
 
 
 def test_pauldron_detail_options_control_optional_scad_features():
@@ -195,14 +218,79 @@ def test_pauldron_detail_options_control_optional_scad_features():
     assert "Optional raised rune-like decorative motif" in scad
 
 
-def test_each_bracer_style_emits_style_specific_features():
-    outputs = {style: generate_armor_scad(bracer_style=style) for style in BRACER_STYLES}
-    assert "Knight style: clean raised center plate" in outputs["Knight"]
-    assert "Barbarian style: heavier side ribs" in outputs["Barbarian"]
-    assert "bracer_rivet_diameter_mm" in outputs["Barbarian"]
-    assert "Elven style: slim leaf-like raised center motif" in outputs["Elven"]
-    assert "bracer_plate_patch" in outputs["Knight"]
-    assert len(set(outputs.values())) == len(BRACER_STYLES)
+def test_removed_bracer_aggregate_styles_fall_back_to_plain():
+    assert BRACER_STYLES == ("Plain",)
+    assert "Knight" not in BRACER_STYLES
+    assert "Barbarian" not in BRACER_STYLES
+    assert "Elven" not in BRACER_STYLES
+    params, warnings = build_bracer_generation_params(bracer_style="Elven", detail_options={"runes": True})
+    scad = generate_armor_scad(**params)
+    assert not warnings
+    assert params["bracer_style"] == "Plain"
+    assert params["detail_options"]["runes"] is True
+    assert "Bracer style: Plain" in scad
+    assert "Plain bracer aggregate style" in scad
+
+
+def test_bracer_plain_preset_is_clean_hollow_shell():
+    scad = generate_armor_scad(
+        detail_options={
+            "raised_trim": False,
+            "rivets": False,
+            "center_ridge": False,
+            "spikes": False,
+            "runes": False,
+        }
+    )
+    assert "Bracer details: none" in scad
+    assert "Plain bracer: no decorative geometry" in scad
+    assert "module bracer_shell_point" in scad
+    assert "bracer_opening_width_mm" in scad
+    assert "bracer_outer_plate();" in scad
+    assert "bracer_trim_band(" not in scad.split("module bracer_outer_plate()", 1)[1].split("module bracer_lacing_hole", 1)[0]
+
+
+def test_bracer_decoration_presets_emit_distinct_intentional_geometry():
+    assert tuple(BRACER_DECORATION_PRESETS) == (
+        "Plain",
+        "Raised Trim",
+        "Rivets",
+        "Center Ridge",
+        "Spikes",
+        "Runes / Motif",
+    )
+    assert "Knight" not in BRACER_DECORATION_PRESETS
+    assert "Barbarian" not in BRACER_DECORATION_PRESETS
+    assert "Elven" not in BRACER_DECORATION_PRESETS
+    presets = {
+        "Raised Trim": {"raised_trim": True},
+        "Rivets": {"rivets": True},
+        "Center Ridge": {"center_ridge": True},
+        "Spikes": {"spikes": True},
+        "Runes / Motif": {"runes": True},
+    }
+    outputs = {
+        name: generate_armor_scad(detail_options={
+            "raised_trim": False,
+            "rivets": False,
+            "center_ridge": False,
+            "spikes": False,
+            "runes": False,
+            **options,
+        })
+        for name, options in presets.items()
+    }
+    assert "bracer_side_rail(side)" in outputs["Raised Trim"]
+    assert "bracer_trim_band(bracer_trim_width_mm/2)" in outputs["Raised Trim"]
+    assert "bracer_rivet(side, y)" in outputs["Rivets"]
+    assert "sphere(d=diameter)" in outputs["Rivets"]
+    assert "bracer_center_ridge();" in outputs["Center Ridge"]
+    assert "bracer_trim_width_mm*1.55" in outputs["Center Ridge"]
+    assert "bracer_spike(y)" in outputs["Spikes"]
+    assert "bracer_spike_height_mm" in outputs["Spikes"]
+    assert "bracer_chevron_rune(y)" in outputs["Runes / Motif"]
+    assert "bracer_rune_stroke(-rune_w" in outputs["Runes / Motif"]
+    assert len(set(outputs.values())) == len(outputs)
 
 
 def test_each_pauldron_style_emits_style_specific_features():
@@ -228,9 +316,10 @@ def test_invalid_bracer_dimensions_are_clamped_safely():
     )
     assert metrics["bracer_length_mm"] == 60
     assert metrics["forearm_width_mm"] == 45
-    assert metrics["wrist_width_mm"] == metrics["forearm_width_mm"]
+    assert metrics["wrist_width_mm"] < metrics["forearm_width_mm"]
     assert metrics["bracer_thickness_mm"] == 2.4
-    assert metrics["bracer_arc_degrees"] == 220
+    assert metrics["bracer_wall_thickness_mm"] == 2.4
+    assert metrics["bracer_arc_degrees"] == 260
     assert warnings
     scad = generate_armor_scad(metrics={
         "bracer_length_mm": -100,
@@ -240,9 +329,205 @@ def test_invalid_bracer_dimensions_are_clamped_safely():
         "bracer_arc_degrees": 999,
     })
     assert "bracer_length_mm = 60;" in scad
-    assert "wrist_width_mm = 45;" in scad
+    assert "wrist_width_mm = 36.9;" in scad
     assert "bracer_thickness_mm = 2.4;" in scad
+    assert "bracer_wall_thickness_mm = 2.4;" in scad
     assert "Warning:" in scad
+
+
+def test_bracer_new_shell_values_and_unsafe_opening_are_clamped():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "bracer_length_mm": 180,
+            "wrist_width_mm": 70,
+            "forearm_width_mm": 100,
+            "bracer_depth_mm": 26,
+            "bracer_wall_thickness_mm": 50,
+            "bracer_opening_width_mm": 200,
+            "bracer_detail_depth_mm": 99,
+        }
+    )
+    assert metrics["bracer_wall_thickness_mm"] < metrics["bracer_depth_mm"] / 2
+    layout = bracer_closure_layout_metrics(metrics)
+    assert layout["hole_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert metrics["bracer_detail_depth_mm"] <= metrics["bracer_wall_thickness_mm"] * 1.1
+    assert metrics["bracer_exterior_finishing_allowance_mm"] <= metrics["bracer_wall_thickness_mm"] * 0.28
+    assert any("inner cavity fits" in warning for warning in warnings)
+    assert any("opening" in warning for warning in warnings)
+
+
+def test_lacing_holes_are_complete_and_clear_of_opening_bounds():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "bracer_length_mm": 180,
+            "wrist_width_mm": 70,
+            "forearm_width_mm": 100,
+            "bracer_wall_thickness_mm": 4,
+            "bracer_opening_width_mm": 54,
+            "bracer_exterior_finishing_allowance_mm": 1.5,
+        }
+    )
+    layout = bracer_closure_layout_metrics(metrics)
+    hole_depth = metrics["bracer_binding_hole_diameter_mm"]
+    assert layout["hole_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert metrics["bracer_closure_edge_margin_mm"] >= max(2.4, hole_depth * 0.45)
+    assert any("opening_width" in warning or "closure" in warning for warning in warnings)
+    scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Lacing Holes")
+    assert "module bracer_closure_flange(side)" in scad
+    assert "rotate([0, bracer_opening_edge_angle(side, y), 0])" in scad
+    assert "bracer_lacing_hole_cutter_diameter()" in scad
+    assert "Cutter axis: radial XZ flange-face normal" in scad
+
+
+def test_lacing_loop_geometry_has_outer_body_and_subtractive_passage():
+    metrics, _ = resolve_bracer_metrics({"bracer_wall_thickness_mm": 4})
+    scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Lacing Loops")
+    layout = bracer_closure_layout_metrics(metrics)
+    loop_module = scad.split("module bracer_lacing_loop", 1)[1].split("module bracer_reinforced_slot_frame", 1)[0]
+    assert "difference()" in loop_module
+    assert "bracer_external_feature_center_x(side, y, bracer_loop_height_mm)" in loop_module
+    assert "cylinder(h=bracer_loop_passage_diameter_mm + bracer_loop_wall_thickness_mm*4" in loop_module
+    assert layout["loop_outside_cavity"]
+    assert layout["loop_has_passage"]
+    assert metrics["bracer_loop_passage_diameter_mm"] >= 3.2
+    assert metrics["bracer_loop_height_mm"] <= metrics["bracer_closure_flange_thickness_mm"] * 1.1
+    assert metrics["bracer_loop_length_mm"] <= metrics["bracer_closure_usable_length_mm"] / metrics["bracer_binding_count"] * 0.42
+
+
+def test_strap_slots_are_complete_rounded_passages_clear_of_opening_bounds():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "wrist_width_mm": 64,
+            "forearm_width_mm": 88,
+            "bracer_wall_thickness_mm": 5,
+            "bracer_opening_width_mm": 58,
+        }
+    )
+    layout = bracer_closure_layout_metrics(metrics)
+    assert layout["strap_slot_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert metrics["bracer_strap_slot_width_mm"] > metrics["bracer_strap_width_nominal_mm"]
+    assert warnings
+    scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Strap Slots")
+    assert "module bracer_rounded_slot_cutter" in scad
+    assert "Slot cutter axis: radial XZ flange normal" in scad
+    assert "bracer_closure_cutter_depth()" in scad
+
+
+def test_buckle_ready_geometry_has_anchor_and_larger_access_passages():
+    metrics, _ = resolve_bracer_metrics({"bracer_wall_thickness_mm": 4.5})
+    scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Buckle-Ready Slots")
+    layout = bracer_closure_layout_metrics(metrics)
+    assert metrics["bracer_buckle_slot_width_mm"] > metrics["bracer_strap_slot_width_mm"]
+    assert metrics["bracer_buckle_slot_length_mm"] > metrics["bracer_strap_slot_length_mm"]
+    assert layout["buckle_slot_flange_margin_mm"] > 0
+    assert "bracer_strap_anchor_frame(-1" in scad
+    assert "bracer_buckle_access_frame(1" in scad
+    assert "bracer_strap_anchor_slot(-1" in scad
+    assert "bracer_buckle_access_slot(1" in scad
+    assert "bracer_strap_anchor_pad" not in scad
+
+
+def test_finishing_allowance_adds_exterior_stock_without_shrinking_passages_or_fit():
+    base, _ = resolve_bracer_metrics(
+        {
+            "wrist_width_mm": 72,
+            "forearm_width_mm": 104,
+            "bracer_wall_thickness_mm": 4.5,
+            "bracer_exterior_finishing_allowance_mm": 0,
+        }
+    )
+    finished, warnings = resolve_bracer_metrics(
+        {
+            "wrist_width_mm": 72,
+            "forearm_width_mm": 104,
+            "bracer_wall_thickness_mm": 4.5,
+            "bracer_exterior_finishing_allowance_mm": 1.5,
+        }
+    )
+    assert finished["wrist_width_mm"] == base["wrist_width_mm"]
+    assert finished["forearm_width_mm"] == base["forearm_width_mm"]
+    assert finished["bracer_wall_thickness_mm"] == base["bracer_wall_thickness_mm"]
+    assert finished["bracer_binding_hole_diameter_mm"] == base["bracer_binding_hole_diameter_mm"]
+    assert finished["bracer_strap_slot_width_mm"] == base["bracer_strap_slot_width_mm"]
+    assert finished["bracer_exterior_finishing_allowance_mm"] <= finished["bracer_wall_thickness_mm"] * 0.28
+    assert any("finishing_allowance" in warning for warning in warnings)
+    scad = generate_armor_scad(metrics=finished, bracer_binding_style="Lacing Holes")
+    assert "bracer_shell_point_diameter() = bracer_wall_thickness_mm + 2*bracer_exterior_finishing_allowance_mm" in scad
+    assert "bracer_lacing_hole_cutter_diameter() =" in scad
+
+
+def test_bracer_binding_styles_emit_expected_positive_and_subtractive_geometry():
+    assert BRACER_BINDING_STYLES == ("None", "Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots")
+    none = generate_armor_scad(bracer_binding_style="None")
+    holes = generate_armor_scad(bracer_binding_style="Lacing Holes")
+    loops = generate_armor_scad(bracer_binding_style="Lacing Loops")
+    slots = generate_armor_scad(bracer_binding_style="Strap Slots")
+    buckle = generate_armor_scad(bracer_binding_style="Buckle-Ready Slots")
+    legacy_buckle = generate_armor_scad(bracer_binding_style="Buckle Tabs")
+    assert "No positive bracer binding hardware selected" in none
+    assert "Lacing holes: paired subtractive round holes" in holes
+    assert "bracer_lacing_hole(side, bracer_binding_y(i));" in holes
+    assert "difference()" in holes
+    assert "Compact external lacing loops" in loops
+    assert "bracer_lacing_loop(side, bracer_binding_y(i));" in loops
+    assert "Strap slots: paired subtractive rectangular slots" in slots
+    assert "bracer_strap_slot(side, bracer_binding_y(i+1));" in slots
+    assert "Buckle-ready reinforced frames" in buckle
+    assert "bracer_strap_anchor_frame(-1, bracer_binding_y(i+1));" in buckle
+    assert "bracer_buckle_access_frame(1, bracer_binding_y(i+1));" in buckle
+    assert "bracer_strap_anchor_slot(-1, bracer_binding_y(i+1));" in buckle
+    assert "bracer_buckle_access_slot(1, bracer_binding_y(i+1));" in buckle
+    assert "Bracer binding: Buckle-Ready Slots" in legacy_buckle
+
+
+def test_bracer_closure_spacing_spans_usable_length_uniformly():
+    layout = bracer_closure_layout_metrics({"bracer_length_mm": 180, "bracer_wall_thickness_mm": 4})
+    metrics = layout["metrics"]
+    positions = layout["positions_y"]
+    spacings = [b - a for a, b in zip(positions, positions[1:])]
+    assert positions[0] >= metrics["bracer_closure_wrist_margin_mm"]
+    assert positions[-1] <= metrics["bracer_length_mm"] - metrics["bracer_closure_elbow_margin_mm"]
+    assert abs(sum(positions) / len(positions) - layout["usable_midpoint_y"]) < 0.001
+    assert max(spacings) - min(spacings) < 0.001
+    coverage = (positions[-1] - positions[0]) / metrics["bracer_length_mm"]
+    assert 0.65 <= coverage <= 0.75
+
+
+def test_bracer_closure_uses_explicit_flange_system_for_all_active_styles():
+    for style in ("Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots"):
+        scad = generate_armor_scad(bracer_binding_style=style)
+        assert "module bracer_closure_flanges()" in scad
+        assert "bracer_closure_flanges();" in scad
+        assert "function bracer_flange_center_x(side, y)" in scad
+        assert "function bracer_outward_normal_x(side, y)" in scad
+        assert "bracer_closure_center_x(side, y, passage_depth) = bracer_flange_center_x(side, y);" in scad
+
+
+def test_bracer_closure_cutter_orientation_regression_not_shell_tangent():
+    layout = bracer_closure_layout_metrics()
+    scad = generate_armor_scad(bracer_binding_style="Lacing Holes")
+    hole_module = scad.split("module bracer_lacing_hole", 1)[1].split("module bracer_rounded_slot_cutter", 1)[0]
+    assert layout["cutter_axis"] == "radial_flange_normal_xz"
+    assert layout["legacy_shell_tangent_axis"] == "z"
+    assert "rotate([0, bracer_opening_edge_angle(side, y), 0])" in hole_module
+    assert "bracer_closure_cutter_depth()" in hole_module
+    assert "cylinder(h=bracer_wall_thickness_mm*7" not in hole_module
+
+
+def test_default_lacing_hole_has_complete_flange_margin_and_crossing_cutter():
+    layout = bracer_closure_layout_metrics()
+    metrics = layout["metrics"]
+    assert layout["hole_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert layout["cutter_crosses_flange_thickness"] > metrics["bracer_closure_flange_thickness_mm"]
+    assert metrics["bracer_closure_flange_outward_offset_mm"] > metrics["bracer_closure_flange_thickness_mm"] / 2
+
+
+def test_bracer_debug_geometry_exposes_flanges_cutters_and_normals():
+    scad = generate_armor_scad(bracer_binding_style="Strap Slots", debug_geometry=True)
+    assert "bracer_closure_debug_geometry();" in scad
+    assert "%bracer_closure_flanges();" in scad
+    assert "#bracer_binding_cutters();" in scad
+    assert "bracer_outward_normal_x(side, y)*bracer_closure_flange_thickness_mm" in scad
 
 
 def test_invalid_pauldron_dimensions_are_clamped_safely():
@@ -302,16 +587,18 @@ def test_ui_armor_params_build_valid_bracer_kwargs():
             "spikes": False,
             "runes": True,
         },
+        bracer_binding_style="Lacing Loops",
     )
     assert not warnings
     assert params["armor_type"] == "Bracer"
-    assert params["bracer_style"] == "Elven"
+    assert params["bracer_style"] == "Plain"
     assert params["metrics"]["bracer_length_mm"] == 210
     assert params["detail_options"]["runes"] is True
+    assert params["bracer_binding_style"] == "Lacing Loops"
     assert enabled_bracer_detail_labels(params["detail_options"]) == ["Raised trim", "Runes / motif"]
     scad = generate_armor_scad(**params)
     assert "Digital Forge Armor Version 1: Bracer" in scad
-    assert "Bracer style: Elven" in scad
+    assert "Bracer style: Plain" in scad
 
 
 def test_ui_armor_params_build_valid_pauldron_kwargs():
@@ -352,14 +639,14 @@ def test_valid_bracer_audit_has_no_warnings():
             "bracer_thickness_mm": 4.2,
             "bracer_arc_degrees": 145,
         },
-        bracer_style="Knight",
+        bracer_style="Plain",
         detail_options={"raised_trim": True, "center_ridge": True},
     )
     assert not audit["warnings"]
     combined = " ".join(audit["passes"])
     assert "tapers outward" in combined
-    assert "Raised center panel fits" in combined
-    assert "Knight style" in combined
+    assert "Inner cavity remains" in combined
+    assert "Plain bracer style" in combined
 
 
 def test_thin_bracer_audit_warns():
@@ -398,7 +685,7 @@ def test_invalid_bracer_taper_audit_warns_and_generation_corrects():
     }
     audit = audit_bracer_geometry(metrics)
     resolved, warnings = resolve_bracer_metrics(metrics)
-    assert resolved["wrist_width_mm"] == resolved["forearm_width_mm"]
+    assert resolved["wrist_width_mm"] < resolved["forearm_width_mm"]
     assert any("Wrist width is larger" in warning for warning in audit["warnings"])
     assert any("tapers outward" in warning for warning in warnings)
 
