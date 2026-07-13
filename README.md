@@ -64,7 +64,50 @@ Version 4 focuses on geometry stabilization, visual debugging, and safer optiona
 The main Streamlit app now has a top-level **Generation category** selector:
 
 - **Sword** remains the default and preserves the existing sword controls, audit, preview, SCAD download, and STL export flow.
+- **Scabbard** creates a straight-blade scabbard from inherited sword blade dimensions.
 - **Armor** shows armor-specific controls and currently supports **Bracer** and **Pauldron**.
+
+## Scabbard Mode
+
+Scabbard mode is the Week 2 parametric scabbard core. It supports:
+
+- **Symmetrical Tapered** blades
+- **Leaf** blades
+
+Unsupported blade families, including **Falchion** and **Curved**, fail with a clear validation message rather than generating a mismatched scabbard. The first scabbard implementation is straight-axis only and does not include curved sweep logic.
+
+The scabbard inherits blade dimensions from the corresponding sword configuration:
+
+- Blade type
+- Blade length
+- Base width
+- Tip width
+- Blade thickness
+- Ricasso length
+- Prop-safe tip width and blade thickness clamps used by sword generation
+
+Clearance is defined as **per-side clearance** in millimetres. It is added around blade width and blade thickness, so the full internal cavity grows by twice the configured clearance across each axis. The default is intended for digital fit testing and early printable prototypes, but printer-specific tolerance calibration is still required.
+
+Wall thickness is the minimum material between the internal blade cavity and the exterior shell on both side walls and face walls. Values below the safe minimum are clamped and reported in the geometry audit.
+
+Split mode supports:
+
+- **Single Piece**, which emits one complete scabbard shell.
+- **Two Piece**, which emits named `scabbard_left_half()` and `scabbard_right_half()` modules split along the longitudinal center plane. The preview shows the halves separated for printing; removing the top-level translations digitally reassembles them without overlap.
+
+The basic throat is an optional reinforced collar at the blade-entry opening. It leaves the insertion path open and uses the same cavity subtraction as the body. The basic end cap closes the outside past the blade tip while preserving the configured tip-clearance zone inside the cavity.
+
+Scabbard output uses the same generated SCAD display, `.scad` download, PNG preview, and STL export buttons as Sword mode. OpenSCAD is optional for SCAD download and required only for PNG/STL export.
+
+Automated completion-gate tests use deterministic profile-level checks instead of full solid collision testing. At sampled blade positions, tests verify:
+
+- Cavity half-width is at least blade half-width plus per-side clearance.
+- Cavity half-thickness is at least blade half-thickness plus per-side clearance.
+- Exterior side and face walls remain at or above the safe minimum wall thickness.
+- The throat entry remains open.
+- The end cap starts beyond the required tip-clearance zone.
+
+This proves digital clearance at the sampled profile level. It does not guarantee physical fit after printing, because material, slicer settings, support cleanup, sanding, shrinkage, and printer calibration still affect real-world tolerances.
 
 The Bracer generator creates a decorative forearm cuff / arm guard with:
 
@@ -186,6 +229,9 @@ The generated models use intentionally simplified, decorative geometry. They are
 - Debug bounds are visual diagnostics, not collision or manufacturability analysis.
 - Sword and guard variants remain intentionally limited while the shared geometry contract stabilizes.
 - Armor mode currently supports Bracer and Pauldron as the first armor modules.
+- Scabbard mode currently supports only Symmetrical Tapered and Leaf straight blades.
+- Scabbard fit validation is deterministic profile-level digital validation, not physical print validation.
+- Scabbard mode does not include suspension rings, belt loops, frog attachments, ornate chapes, decorative throat fittings, magnets, snap-fit locks, retention clips, drainage holes, or alignment pins.
 - Bracer Version 1 does not include coded motifs, runes, spikes, rivets, or themed decoration presets.
 - Wide and Narrow Raised Design Panels are maker-finished stock only; sanding behavior, attached decorative pieces, fit, supports, print orientation, and material-specific durability still require physical inspection.
 - Preview quality and export behavior depend on the local OpenSCAD installation.

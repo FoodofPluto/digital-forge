@@ -32,6 +32,13 @@ from scad_generator import (
     resolve_fuller_dimensions,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
+from scabbard_generator import (
+    MAX_SCABBARD_CLEARANCE_MM,
+    MIN_SCABBARD_CLEARANCE_MM,
+    MIN_SCABBARD_WALL_THICKNESS_MM,
+    normalize_scabbard_parameters,
+    validate_scabbard_fit,
+)
 
 
 SUPPORTED_BLADE_STYLES = set(BLADE_STYLES)
@@ -60,6 +67,61 @@ def _number(metrics: dict[str, float], name: str) -> float:
     except (TypeError, ValueError):
         return 0.0
     return number if isfinite(number) else 0.0
+
+
+def audit_scabbard_geometry(
+    metrics: dict[str, float],
+    blade_type: str = "tapered",
+    clearance_per_side_mm: float = 0.6,
+    wall_thickness_mm: float = 3.2,
+    split_mode: str = "Single Piece",
+    throat_enabled: bool = True,
+    end_cap_enabled: bool = True,
+) -> dict[str, list[str]]:
+    """Return scabbard-specific geometry checks and clamp messages."""
+    warnings: list[str] = []
+    info: list[str] = ["Scabbard mode: digital prototype geometry for straight supported blades only."]
+    passed: list[str] = []
+
+    try:
+        params, clamp_warnings = normalize_scabbard_parameters(
+            blade_type,
+            metrics,
+            clearance_per_side_mm,
+            wall_thickness_mm,
+            split_mode,
+            throat_enabled,
+            end_cap_enabled,
+        )
+    except ValueError as exc:
+        return {"warnings": [str(exc)], "info": info, "passes": passed}
+
+    warnings.extend(clamp_warnings)
+    requested_clearance = _number({"value": clearance_per_side_mm}, "value")
+    requested_wall = _number({"value": wall_thickness_mm}, "value")
+    if requested_clearance < MIN_SCABBARD_CLEARANCE_MM:
+        warnings.append(
+            f"Clearance below {MIN_SCABBARD_CLEARANCE_MM:g} mm would create zero practical insertion room; "
+            f"generation uses {params.clearance_per_side_mm:g} mm per side."
+        )
+    elif requested_clearance > MAX_SCABBARD_CLEARANCE_MM:
+        warnings.append(
+            f"Clearance above {MAX_SCABBARD_CLEARANCE_MM:g} mm may be excessively loose; "
+            f"generation uses {params.clearance_per_side_mm:g} mm per side."
+        )
+    if requested_wall < MIN_SCABBARD_WALL_THICKNESS_MM:
+        warnings.append(
+            f"Wall thickness below {MIN_SCABBARD_WALL_THICKNESS_MM:g} mm is unsafe for this prototype; "
+            f"generation uses {params.wall_thickness_mm:g} mm."
+        )
+
+    fit = validate_scabbard_fit(params)
+    warnings.extend(fit["warnings"])
+    info.extend(fit["info"])
+    passed.extend(fit["passes"])
+    if params.blade_profile.ricasso_length_mm < params.blade_profile.length_mm:
+        passed.append("Inherited sword blade dimensions are internally consistent with scabbard length.")
+    return {"warnings": warnings, "info": info, "passes": passed}
 
 
 def audit_bracer_geometry(

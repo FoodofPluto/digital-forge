@@ -923,10 +923,11 @@ def test_invalid_pauldron_dimensions_are_clamped_safely():
 
 
 def test_ui_generation_category_defaults_to_sword():
-    assert GENERATION_CATEGORIES == ("Sword", "Armor")
+    assert GENERATION_CATEGORIES == ("Sword", "Scabbard", "Armor")
     assert DEFAULT_GENERATION_CATEGORY == "Sword"
     assert normalize_generation_category(None) == "Sword"
     assert normalize_generation_category("unknown") == "Sword"
+    assert normalize_generation_category("scabbard") == "Scabbard"
     assert normalize_generation_category("armor") == "Armor"
 
 

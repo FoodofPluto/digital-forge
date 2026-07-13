@@ -8,7 +8,7 @@ import streamlit as st
 
 from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
-from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry
+from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry, audit_scabbard_geometry
 from preview_service import export_preview_set, export_with_openscad
 from realism_rules import check_realism
 from scad_generator import (
@@ -29,12 +29,23 @@ from scad_generator import (
     has_visible_components,
     resolve_bracer_metrics,
 )
+from scabbard_generator import (
+    DEFAULT_SCABBARD_CLEARANCE_MM,
+    DEFAULT_SCABBARD_WALL_THICKNESS_MM,
+    MAX_SCABBARD_CLEARANCE_MM,
+    MAX_SCABBARD_WALL_THICKNESS_MM,
+    MIN_SCABBARD_CLEARANCE_MM,
+    MIN_SCABBARD_WALL_THICKNESS_MM,
+    SCABBARD_SPLIT_MODES,
+    generate_scabbard_scad,
+)
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from ui_params import (
     BRACER_DECORATION_PRESETS,
     GENERATION_CATEGORIES,
     build_bracer_generation_params,
     build_pauldron_generation_params,
+    build_scabbard_generation_params,
     enabled_bracer_detail_labels,
     enabled_pauldron_detail_labels,
     normalize_pauldron_detail_options,
@@ -250,6 +261,106 @@ if generation_category == "Sword":
         fuller_depth_mm,
     )
     download_name = f"{sword_type}.scad"
+elif generation_category == "Scabbard":
+    st.subheader("Scabbard")
+    st.caption("Scabbards currently support only Symmetrical Tapered and Leaf straight blade profiles.")
+    sword_type = st.selectbox("Source sword preset", list(SWORD_PRESETS), key="scabbard_sword_type")
+    preset = SWORD_PRESETS[sword_type]
+    blade_label = st.selectbox("Blade type", ("Symmetrical Tapered", "Leaf"), key="scabbard_blade_type")
+    blade_style = "tapered" if blade_label == "Symmetrical Tapered" else "leaf"
+
+    st.subheader("Inherited blade dimensions")
+    scabbard_metric_columns = st.columns(3)
+    scabbard_metrics = {}
+    for index, name in enumerate(("blade_length_mm", "blade_base_width_mm", "blade_tip_width_mm", "blade_thickness_mm", "ricasso_length_mm")):
+        spec = preset[name]
+        with scabbard_metric_columns[index % 3]:
+            scabbard_metrics[name] = st.number_input(
+                name.replace("_mm", "").replace("_", " ").title() + " (mm)",
+                min_value=0.0 if name == "ricasso_length_mm" else 0.1,
+                value=float(spec["default"]),
+                step=1.0 if name != "blade_thickness_mm" else 0.1,
+                key=f"scabbard_{sword_type}_{name}",
+                help=f"Inherited from the corresponding sword configuration. Typical range: {spec['min']:g}-{spec['max']:g} mm",
+            )
+
+    st.subheader("Fit and shell")
+    fit_col1, fit_col2, fit_col3 = st.columns(3)
+    with fit_col1:
+        clearance_per_side_mm = st.number_input(
+            "Clearance per side (mm)",
+            min_value=0.0,
+            max_value=float(MAX_SCABBARD_CLEARANCE_MM * 2),
+            value=float(DEFAULT_SCABBARD_CLEARANCE_MM),
+            step=0.05,
+            help="Applied around blade width and thickness. Values outside the safe range are clamped.",
+        )
+    with fit_col2:
+        wall_thickness_mm = st.number_input(
+            "Wall thickness (mm)",
+            min_value=0.1,
+            max_value=float(MAX_SCABBARD_WALL_THICKNESS_MM * 2),
+            value=float(DEFAULT_SCABBARD_WALL_THICKNESS_MM),
+            step=0.1,
+            help="Minimum material from cavity to exterior sides/faces.",
+        )
+    with fit_col3:
+        split_mode = st.selectbox("Split mode", SCABBARD_SPLIT_MODES)
+        throat_enabled = st.checkbox("Throat collar", value=True)
+        end_cap_enabled = st.checkbox("End cap", value=True)
+
+    try:
+        scabbard_params, scabbard_warnings = build_scabbard_generation_params(
+            blade_style,
+            scabbard_metrics,
+            clearance_per_side_mm,
+            wall_thickness_mm,
+            split_mode,
+            throat_enabled,
+            end_cap_enabled,
+        )
+        can_export = True
+    except ValueError as exc:
+        scabbard_params = {}
+        scabbard_warnings = [str(exc)]
+        can_export = False
+
+    st.subheader("Geometry audit")
+    scabbard_audit = audit_scabbard_geometry(
+        scabbard_metrics,
+        blade_style,
+        clearance_per_side_mm,
+        wall_thickness_mm,
+        split_mode,
+        throat_enabled,
+        end_cap_enabled,
+    )
+    audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
+    with audit_warning_col:
+        st.markdown("**Warnings**")
+        warnings = scabbard_warnings + scabbard_audit["warnings"]
+        if warnings:
+            for message in dict.fromkeys(warnings):
+                st.warning(message)
+        else:
+            st.success("No scabbard geometry warnings.")
+    with audit_info_col:
+        st.markdown("**Notes**")
+        st.info(
+            f"Safe clearance range: {MIN_SCABBARD_CLEARANCE_MM:g}-{MAX_SCABBARD_CLEARANCE_MM:g} mm per side."
+        )
+        st.info(
+            f"Safe wall thickness minimum: {MIN_SCABBARD_WALL_THICKNESS_MM:g} mm."
+        )
+        for message in scabbard_audit["info"]:
+            st.info(message)
+    with audit_pass_col:
+        st.markdown("**Checks passed**")
+        for message in scabbard_audit["passes"]:
+            st.success(message)
+
+    scad = generate_scabbard_scad(**scabbard_params) if scabbard_params else "// Unsupported scabbard configuration."
+    download_name = f"{sword_type}_{blade_style}_scabbard.scad"
 else:
     st.subheader("Armor")
     armor_type = st.selectbox("Armor type", ARMOR_TYPES)

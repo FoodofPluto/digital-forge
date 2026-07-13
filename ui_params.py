@@ -14,8 +14,13 @@ from scad_generator import (
     resolve_bracer_metrics,
     resolve_pauldron_metrics,
 )
+from scabbard_generator import (
+    DEFAULT_SCABBARD_CLEARANCE_MM,
+    DEFAULT_SCABBARD_WALL_THICKNESS_MM,
+    normalize_scabbard_parameters,
+)
 
-GENERATION_CATEGORIES = ("Sword", "Armor")
+GENERATION_CATEGORIES = ("Sword", "Scabbard", "Armor")
 DEFAULT_GENERATION_CATEGORY = "Sword"
 
 
@@ -64,6 +69,43 @@ def build_pauldron_generation_params(
         "pauldron_style": style,
         "metrics": resolved_metrics,
         "detail_options": normalize_pauldron_detail_options(style, detail_options),
+    }, warnings
+
+
+def build_scabbard_generation_params(
+    blade_type: str = "tapered",
+    metrics: dict[str, float] | None = None,
+    clearance_per_side_mm: float = DEFAULT_SCABBARD_CLEARANCE_MM,
+    wall_thickness_mm: float = DEFAULT_SCABBARD_WALL_THICKNESS_MM,
+    split_mode: str = "Single Piece",
+    throat_enabled: bool = True,
+    end_cap_enabled: bool = True,
+) -> tuple[dict[str, object], list[str]]:
+    """Return normalized scabbard generation kwargs and non-fatal clamp warnings."""
+    params, warnings = normalize_scabbard_parameters(
+        blade_type,
+        metrics or {},
+        clearance_per_side_mm,
+        wall_thickness_mm,
+        split_mode,
+        throat_enabled,
+        end_cap_enabled,
+    )
+    profile = params.blade_profile
+    return {
+        "blade_type": profile.blade_type,
+        "sword_metrics": {
+            "blade_length_mm": profile.length_mm,
+            "blade_base_width_mm": profile.base_width_mm,
+            "blade_tip_width_mm": profile.tip_width_mm,
+            "blade_thickness_mm": profile.thickness_mm,
+            "ricasso_length_mm": profile.ricasso_length_mm,
+        },
+        "clearance_per_side_mm": params.clearance_per_side_mm,
+        "wall_thickness_mm": params.wall_thickness_mm,
+        "split_mode": params.split_mode,
+        "throat_enabled": params.throat_enabled,
+        "end_cap_enabled": params.end_cap_enabled,
     }, warnings
 
 
