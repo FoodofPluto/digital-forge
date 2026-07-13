@@ -144,38 +144,68 @@ def audit_bracer_geometry(
     else:
         info.append("Increase forearm width or reduce wrist width for a stronger taper silhouette.")
 
-    panel_width = resolved["bracer_panel_width_mm"]
     trim_width = resolved["bracer_trim_width_mm"]
-    rivet_diameter = resolved["bracer_rivet_diameter_mm"]
-    spike_height = resolved["bracer_spike_height_mm"]
     binding_margin = resolved["bracer_binding_margin_mm"]
-    if panel_width > wrist * 0.72:
-        warnings.append("Raised center panel is large relative to the wrist end.")
-    else:
-        passed.append("Raised center panel fits within the bracer surface.")
-    if trim_width > length * 0.14:
-        warnings.append("End trim bands are large relative to bracer length.")
-    else:
-        passed.append("End trim bands remain proportionate.")
-    if details["rivets"] and rivet_diameter > min(wrist, forearm) * 0.12:
-        warnings.append("Rivet details are large relative to the bracer width.")
-    elif details["rivets"]:
-        passed.append("Rivet details are within the decorative size limit.")
-    if details["spikes"] and (spike_height > depth * 0.28 or requested_thickness * 2.3 > depth * 0.28):
-        warnings.append("Spike details may protrude too far for this bracer size.")
-    elif details["spikes"]:
-        passed.append("Spike details stay within the decorative protrusion limit.")
-    if details["runes"] and detail_depth > thickness:
-        warnings.append("Motif detail is deep relative to wall thickness.")
-    elif details["runes"]:
-        passed.append("Motif detail remains shallow and printable.")
-    if finishing_allowance > 0 and detail_depth <= finishing_allowance * 1.4 and any(details.values()):
-        warnings.append("Decoration may disappear under the selected finishing allowance.")
+
+    if details["raised_panel"]:
+        panel_width = resolved["bracer_panel_width_mm"]
+        panel_length = resolved["bracer_panel_length_mm"]
+        panel_height = resolved["bracer_panel_height_mm"]
+        panel_roundness = resolved["bracer_panel_edge_roundness_mm"]
+        panel_wrist_margin = resolved["bracer_panel_wrist_margin_mm"]
+        panel_forearm_margin = resolved["bracer_panel_forearm_margin_mm"]
+        safe_front_width = resolved["bracer_panel_safe_front_width_mm"]
+        min_panel_dimension = min(panel_length, panel_width)
+        requested_height = _number(metrics, "bracer_panel_height_mm")
+        requested_roundness = _number(metrics, "bracer_panel_edge_roundness_mm")
+        requested_position = _number(metrics, "bracer_panel_position_mm")
+
+        if panel_height > thickness * 0.6:
+            warnings.append("Raised Design Panel height is tall relative to wall thickness; reduce panel height to avoid fragile sanding stock.")
+        elif panel_height < 0.8:
+            warnings.append("Raised Design Panel height is low and may not provide meaningful carving or sanding depth.")
+        else:
+            passed.append("Raised Design Panel height is shallow but usable for light maker finishing.")
+
+        if requested_height and requested_height != panel_height:
+            warnings.append("Raised Design Panel height was clamped to avoid excessive protrusion from the shell.")
+
+        opening_margin = max(10.0, trim_width * 1.15)
+        if panel_wrist_margin < opening_margin:
+            warnings.append("Raised Design Panel is close to the wrist opening; shorten the panel or move it toward the forearm.")
+        if panel_forearm_margin < opening_margin:
+            warnings.append("Raised Design Panel is close to the forearm opening; shorten the panel or move it toward the wrist.")
+        if panel_wrist_margin >= opening_margin and panel_forearm_margin >= opening_margin:
+            passed.append("Raised Design Panel stays within usable length margins.")
+
+        if panel_width > safe_front_width * 0.9:
+            warnings.append("Raised Design Panel width approaches the opening or closure region; reduce panel width for safer clearance.")
+        else:
+            passed.append("Raised Design Panel width stays in the exterior front region.")
+
+        if panel_roundness > min_panel_dimension * 0.24 or requested_roundness > panel_roundness:
+            warnings.append("Raised Design Panel edge roundness is near the panel limit; reduce edge roundness or increase panel size.")
+        else:
+            passed.append("Raised Design Panel edge roundness is supported by the panel dimensions.")
+
+        if panel_length < 24.0 or panel_width < 16.0 or panel_height < 0.8:
+            warnings.append("Raised Design Panel dimensions may create weak or poorly printable geometry.")
+        else:
+            passed.append("Raised Design Panel dimensions are printable at the normalized values.")
+
+        if binding in {"Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots"}:
+            closure_clearance = max(4.0, resolved["bracer_closure_flange_width_mm"] * 0.25)
+            panel_half_width = panel_width / 2
+            front_to_closure_gap = safe_front_width / 2 - panel_half_width
+            if front_to_closure_gap < closure_clearance:
+                warnings.append("Raised Design Panel and selected closure are close; reduce panel width before changing approved closure placement.")
+            else:
+                passed.append("Raised Design Panel leaves clearance from selected closure geometry.")
+
+        if requested_position and requested_position != resolved["bracer_panel_position_mm"]:
+            warnings.append("Raised Design Panel position was clamped so the panel remains attached within the shell length.")
     elif finishing_allowance > 0:
         passed.append("Exterior finishing allowance leaves closure passages and inner cavity unchanged.")
-
-    if (details["rivets"] or details["spikes"] or details["runes"] or details["center_ridge"]) and panel_width > (min(wrist, forearm)-opening) * 0.9:
-        warnings.append("Decorative detail may intersect the underside opening; reduce detail width or opening width.")
 
     if binding in {"Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots"}:
         if binding_margin < trim_width:

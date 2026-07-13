@@ -148,7 +148,6 @@ def test_bracer_generation_returns_valid_scad_text():
     assert "module bracer_shell()" in scad
     assert "Tapered hollow shell" in scad
     assert "for (i=[0:bracer_shell_steps-1])" in scad
-    assert "module bracer_trim_band" in scad
     assert "module bracer_outer_plate()" in scad
     assert "bracer();" in scad
 
@@ -183,22 +182,27 @@ def test_direct_pauldron_generator_matches_armor_route():
     assert "Elven style: slimmer leaf-like crest" in direct
 
 
-def test_bracer_detail_options_control_optional_scad_features():
+def test_plain_bracer_generates_no_raised_panel_geometry():
     scad = generate_armor_scad(
         bracer_style="Plain",
-        detail_options={
-            "raised_trim": False,
-            "rivets": True,
-            "center_ridge": False,
-            "spikes": True,
-            "runes": True,
-        },
+        detail_options={"raised_panel": False},
     )
-    assert "Bracer details: rivets, spikes, runes" in scad
-    assert "Optional rivet detail: paired rows of low rounded caps" in scad
-    assert "Optional controlled ornamental spikes" in scad
-    assert "Optional raised rune / motif" in scad
-    assert "Optional raised trim" not in scad
+    assert "Bracer details: none" in scad
+    assert "Plain bracer: no decorative geometry" in scad
+    outer_plate = scad.split("module bracer_outer_plate()", 1)[1].split("module bracer_flange_section", 1)[0]
+    assert "bracer_raised_design_panel();" not in outer_plate
+
+
+def test_raised_design_panel_generates_positive_panel_geometry():
+    scad = generate_armor_scad(
+        bracer_style="Plain",
+        detail_options={"raised_panel": True},
+    )
+    assert "Bracer details: raised_panel" in scad
+    assert "module bracer_raised_design_panel()" in scad
+    assert "Raised Design Panel: broad shallow exterior field" in scad
+    assert "bracer_raised_design_panel();" in scad
+    assert "hull()" in scad
 
 
 def test_pauldron_detail_options_control_optional_scad_features():
@@ -227,70 +231,34 @@ def test_removed_bracer_aggregate_styles_fall_back_to_plain():
     scad = generate_armor_scad(**params)
     assert not warnings
     assert params["bracer_style"] == "Plain"
-    assert params["detail_options"]["runes"] is True
+    assert params["detail_options"] == {"raised_panel": False}
     assert "Bracer style: Plain" in scad
     assert "Plain bracer aggregate style" in scad
+    assert "bracer_raised_design_panel();" not in scad
 
 
 def test_bracer_plain_preset_is_clean_hollow_shell():
     scad = generate_armor_scad(
-        detail_options={
-            "raised_trim": False,
-            "rivets": False,
-            "center_ridge": False,
-            "spikes": False,
-            "runes": False,
-        }
+        detail_options={"raised_panel": False}
     )
     assert "Bracer details: none" in scad
     assert "Plain bracer: no decorative geometry" in scad
     assert "module bracer_shell_point" in scad
     assert "bracer_opening_width_mm" in scad
     assert "bracer_outer_plate();" in scad
-    assert "bracer_trim_band(" not in scad.split("module bracer_outer_plate()", 1)[1].split("module bracer_lacing_hole", 1)[0]
+    assert "bracer_rune" not in scad
+    assert "bracer_spike" not in scad
+    assert "bracer_trim_band" not in scad
 
 
-def test_bracer_decoration_presets_emit_distinct_intentional_geometry():
+def test_bracer_decoration_presets_are_frozen_to_two_choices():
     assert tuple(BRACER_DECORATION_PRESETS) == (
         "Plain",
-        "Raised Trim",
-        "Rivets",
-        "Center Ridge",
-        "Spikes",
-        "Runes / Motif",
+        "Raised Design Panel",
     )
-    assert "Knight" not in BRACER_DECORATION_PRESETS
-    assert "Barbarian" not in BRACER_DECORATION_PRESETS
-    assert "Elven" not in BRACER_DECORATION_PRESETS
-    presets = {
-        "Raised Trim": {"raised_trim": True},
-        "Rivets": {"rivets": True},
-        "Center Ridge": {"center_ridge": True},
-        "Spikes": {"spikes": True},
-        "Runes / Motif": {"runes": True},
-    }
-    outputs = {
-        name: generate_armor_scad(detail_options={
-            "raised_trim": False,
-            "rivets": False,
-            "center_ridge": False,
-            "spikes": False,
-            "runes": False,
-            **options,
-        })
-        for name, options in presets.items()
-    }
-    assert "bracer_side_rail(side)" in outputs["Raised Trim"]
-    assert "bracer_trim_band(bracer_trim_width_mm/2)" in outputs["Raised Trim"]
-    assert "bracer_rivet(side, y)" in outputs["Rivets"]
-    assert "sphere(d=diameter)" in outputs["Rivets"]
-    assert "bracer_center_ridge();" in outputs["Center Ridge"]
-    assert "bracer_trim_width_mm*1.55" in outputs["Center Ridge"]
-    assert "bracer_spike(y)" in outputs["Spikes"]
-    assert "bracer_spike_height_mm" in outputs["Spikes"]
-    assert "bracer_chevron_rune(y)" in outputs["Runes / Motif"]
-    assert "bracer_rune_stroke(-rune_w" in outputs["Runes / Motif"]
-    assert len(set(outputs.values())) == len(outputs)
+    assert BRACER_DECORATION_PRESETS["Plain"] == {"raised_panel": False}
+    assert BRACER_DECORATION_PRESETS["Raised Design Panel"] == {"raised_panel": True}
+    assert "Runes / Motif" not in BRACER_DECORATION_PRESETS
 
 
 def test_each_pauldron_style_emits_style_specific_features():
@@ -354,6 +322,104 @@ def test_bracer_new_shell_values_and_unsafe_opening_are_clamped():
     assert metrics["bracer_exterior_finishing_allowance_mm"] <= metrics["bracer_wall_thickness_mm"] * 0.28
     assert any("inner cavity fits" in warning for warning in warnings)
     assert any("opening" in warning for warning in warnings)
+
+
+def test_default_raised_design_panel_values_generate_valid_scad():
+    scad = generate_armor_scad(detail_options={"raised_panel": True})
+    assert "bracer_panel_length_mm = 105;" in scad
+    assert "bracer_panel_width_mm = 24;" in scad
+    assert "bracer_panel_height_mm = 1.6;" in scad
+    assert "nan" not in scad.lower()
+    assert " = inf;" not in scad.lower()
+    assert " = -inf;" not in scad.lower()
+
+
+def test_raised_design_panel_metrics_are_bounded_to_shell():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "bracer_length_mm": 120,
+            "wrist_width_mm": 60,
+            "forearm_width_mm": 72,
+            "bracer_depth_mm": 32,
+            "bracer_wall_thickness_mm": 3.2,
+            "bracer_opening_width_mm": 44,
+            "bracer_panel_length_mm": 999,
+            "bracer_panel_width_mm": 999,
+            "bracer_panel_height_mm": 99,
+            "bracer_panel_edge_roundness_mm": 99,
+            "bracer_panel_position_mm": 999,
+        }
+    )
+    assert metrics["bracer_panel_length_mm"] <= metrics["bracer_panel_usable_length_mm"]
+    assert metrics["bracer_panel_width_mm"] <= metrics["bracer_panel_safe_front_width_mm"]
+    assert metrics["bracer_panel_height_mm"] <= metrics["bracer_wall_thickness_mm"] * 0.72
+    assert metrics["bracer_panel_edge_roundness_mm"] <= min(
+        metrics["bracer_panel_length_mm"], metrics["bracer_panel_width_mm"]
+    ) * 0.28
+    assert metrics["bracer_panel_start_y_mm"] >= 0
+    assert metrics["bracer_panel_end_y_mm"] <= metrics["bracer_length_mm"]
+    assert any("bracer_panel_length_mm" in warning for warning in warnings)
+    assert any("bracer_panel_width_mm" in warning for warning in warnings)
+    assert any("bracer_panel_height_mm" in warning for warning in warnings)
+    assert any("bracer_panel_edge_roundness_mm" in warning for warning in warnings)
+    assert any("bracer_panel_position_mm" in warning for warning in warnings)
+
+
+def test_plain_bracer_has_no_panel_specific_audit_messages():
+    audit = audit_bracer_geometry(
+        {
+            "bracer_panel_height_mm": 99,
+            "bracer_panel_width_mm": 99,
+            "bracer_panel_position_mm": 99,
+        },
+        detail_options={"raised_panel": False},
+    )
+    combined = " ".join(audit["warnings"] + audit["info"] + audit["passes"])
+    assert "Raised Design Panel" not in combined
+
+
+def test_raised_design_panel_audit_reports_height_and_opening_risks():
+    audit = audit_bracer_geometry(
+        {
+            "bracer_length_mm": 120,
+            "bracer_panel_length_mm": 96,
+            "bracer_panel_height_mm": 0.55,
+            "bracer_panel_position_mm": -40,
+        },
+        detail_options={"raised_panel": True},
+    )
+    combined = " ".join(audit["warnings"])
+    assert "height is low" in combined or "height was clamped" in combined
+    assert "wrist opening" in combined or "position was clamped" in combined
+
+
+def test_raised_design_panel_audit_reports_closure_proximity():
+    audit = audit_bracer_geometry(
+        {
+            "wrist_width_mm": 70,
+            "forearm_width_mm": 92,
+            "bracer_opening_width_mm": 44,
+            "bracer_panel_width_mm": 60,
+        },
+        detail_options={"raised_panel": True},
+        bracer_binding_style="Buckle-Ready Slots",
+    )
+    assert any("selected closure" in warning for warning in audit["warnings"])
+
+
+def test_legacy_removed_bracer_detail_names_normalize_to_plain():
+    scad = generate_armor_scad(
+        detail_options={
+            "raised_trim": True,
+            "rivets": True,
+            "center_ridge": True,
+            "spikes": True,
+            "runes": True,
+        }
+    )
+    assert "Bracer details: none" in scad
+    assert "bracer_raised_design_panel();" not in scad
+    assert "bracer_rune" not in scad
 
 
 def test_lacing_holes_are_complete_and_clear_of_opening_bounds():
@@ -480,6 +546,31 @@ def test_bracer_binding_styles_emit_expected_positive_and_subtractive_geometry()
     assert "Bracer binding: Buckle-Ready Slots" in legacy_buckle
 
 
+def test_every_bracer_binding_style_generates_with_plain_and_raised_panel():
+    for style in BRACER_BINDING_STYLES:
+        plain = generate_armor_scad(bracer_binding_style=style, detail_options={"raised_panel": False})
+        raised = generate_armor_scad(bracer_binding_style=style, detail_options={"raised_panel": True})
+        assert f"Bracer binding: {style}" in plain
+        assert f"Bracer binding: {style}" in raised
+        assert "bracer();" in plain
+        assert "bracer();" in raised
+        assert "bracer_raised_design_panel();" not in plain
+        assert "bracer_raised_design_panel();" in raised
+
+
+def test_bracer_export_scad_stays_functional_for_armor_visibility_flow():
+    scad = generate_armor_scad(
+        armor_type="Bracer",
+        detail_options={"raised_panel": True},
+        bracer_binding_style="Strap Slots",
+        debug_geometry=True,
+    )
+    assert "Digital Forge Armor Version 1: Bracer" in scad
+    assert "bracer();" in scad
+    assert "bracer_closure_debug_geometry();" in scad
+    assert "EMPTY ASSEMBLY" not in scad
+
+
 def test_bracer_closure_spacing_spans_usable_length_uniformly():
     layout = bracer_closure_layout_metrics({"bracer_length_mm": 180, "bracer_wall_thickness_mm": 4})
     metrics = layout["metrics"]
@@ -581,11 +672,7 @@ def test_ui_armor_params_build_valid_bracer_kwargs():
             "bracer_arc_degrees": 155,
         },
         detail_options={
-            "raised_trim": True,
-            "rivets": False,
-            "center_ridge": False,
-            "spikes": False,
-            "runes": True,
+            "raised_panel": True,
         },
         bracer_binding_style="Lacing Loops",
     )
@@ -593,12 +680,13 @@ def test_ui_armor_params_build_valid_bracer_kwargs():
     assert params["armor_type"] == "Bracer"
     assert params["bracer_style"] == "Plain"
     assert params["metrics"]["bracer_length_mm"] == 210
-    assert params["detail_options"]["runes"] is True
+    assert params["detail_options"] == {"raised_panel": True}
     assert params["bracer_binding_style"] == "Lacing Loops"
-    assert enabled_bracer_detail_labels(params["detail_options"]) == ["Raised trim", "Runes / motif"]
+    assert enabled_bracer_detail_labels(params["detail_options"]) == ["Raised Design Panel"]
     scad = generate_armor_scad(**params)
     assert "Digital Forge Armor Version 1: Bracer" in scad
     assert "Bracer style: Plain" in scad
+    assert "bracer_raised_design_panel();" in scad
 
 
 def test_ui_armor_params_build_valid_pauldron_kwargs():
@@ -640,7 +728,7 @@ def test_valid_bracer_audit_has_no_warnings():
             "bracer_arc_degrees": 145,
         },
         bracer_style="Plain",
-        detail_options={"raised_trim": True, "center_ridge": True},
+        detail_options={"raised_panel": False},
     )
     assert not audit["warnings"]
     combined = " ".join(audit["passes"])
@@ -690,7 +778,7 @@ def test_invalid_bracer_taper_audit_warns_and_generation_corrects():
     assert any("tapers outward" in warning for warning in warnings)
 
 
-def test_bracer_audit_warns_for_extreme_ratio_and_detail_size():
+def test_bracer_audit_warns_for_extreme_ratio_and_unsupported_legacy_detail():
     audit = audit_bracer_geometry(
         {
             "bracer_length_mm": 420,
@@ -703,7 +791,6 @@ def test_bracer_audit_warns_for_extreme_ratio_and_detail_size():
     )
     combined = " ".join(audit["warnings"])
     assert "length-to-width ratio is extreme" in combined
-    assert "Spike details" in combined
     assert "Unsupported bracer detail option" in combined
 
 

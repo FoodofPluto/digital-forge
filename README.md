@@ -69,8 +69,10 @@ The main Streamlit app now has a top-level **Generation category** selector:
 The Bracer generator creates a decorative forearm cuff / arm guard with:
 
 - Length, wrist width, forearm width, thickness, and arc/curvature controls
-- Knight, Barbarian, and Elven style options
-- Optional raised trim, rivets, center ridge, blunt fantasy spikes, and rune-like decorative motifs
+- Bracer Version 1 decoration choices: **Plain** or **Raised Design Panel**
+- A Raised Design Panel that adds a broad, shallow exterior/front field for sanding, carving, painting, or attaching original lightweight decorative elements
+- Adjustable panel length, width, height, edge roundness, and wrist-to-forearm position
+- Binding / closure styles: None, Lacing Holes, Lacing Loops, Strap Slots, and Buckle-Ready Slots
 - User-facing warnings when dimensions are clamped into the supported decorative prop range
 
 The Pauldron generator creates decorative shoulder armor with:
@@ -85,6 +87,43 @@ Armor output uses the same generated SCAD display, `.scad` download, PNG preview
 Armor models are decorative/prototype fantasy prop geometry only. They are not wearable protective equipment and should not be treated as safety gear, fabrication-grade armor, or validated protective equipment.
 
 Bracers and pauldrons are not fitted from real body measurements. Their dimensions are visual prop dimensions used to shape the model silhouette, not ergonomic, medical, safety, or protective fit guidance.
+
+### Bracer Version 1 validation preset
+
+Recommended first final test-print settings:
+
+- Armor type: Bracer
+- Length: 180 mm
+- Wrist width: 70 mm
+- Forearm width: 100 mm
+- Depth: 48 mm
+- Wall thickness: 4 mm
+- Opening width: 34 mm
+- Coverage angle: 220 degrees
+- Exterior finishing allowance: 0.5 mm
+- Closure style: Lacing Holes, unless another approved closure style is preferred for the build
+- Decoration: Raised Design Panel
+- Panel length: 105 mm
+- Panel width: 24 mm
+- Panel height: 1.6 mm
+- Panel edge roundness: 5 mm
+- Panel position: 0 mm
+
+Physical validation checklist:
+
+- Verify wrist insertion.
+- Verify forearm comfort.
+- Verify closure alignment.
+- Verify no closure passages are obstructed.
+- Verify the panel remains attached to the shell.
+- Verify the panel provides sufficient sanding or light carving depth.
+- Verify sanding does not expose or weaken the inner wall.
+- Check for sharp edges.
+- Check for cracking near wrist and forearm openings.
+- Confirm print orientation and support requirements for the chosen material and printer.
+- Confirm exported geometry is manifold using the available OpenSCAD preview/export workflow.
+
+Do not record the bracer as physically validated until an actual print has passed these checks.
 
 ## Coordinate system
 
@@ -128,6 +167,7 @@ The generated models use intentionally simplified, decorative geometry. They are
 - Debug bounds are visual diagnostics, not collision or manufacturability analysis.
 - Sword and guard variants remain intentionally limited while the shared geometry contract stabilizes.
 - Armor mode currently supports Bracer and Pauldron as the first armor modules.
-- Armor trim, rivets, spikes, and motifs are decorative surface details and are not validated for strength, comfort, or wearability.
+- Bracer Version 1 does not include coded motifs, runes, spikes, rivets, or themed decoration presets.
+- The Raised Design Panel is maker-finished stock only; sanding behavior, attached decorative pieces, fit, supports, print orientation, and material-specific durability still require physical inspection.
 - Preview quality and export behavior depend on the local OpenSCAD installation.
 - More armor types and larger armor sets are planned but not implemented yet.

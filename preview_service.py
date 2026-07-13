@@ -37,7 +37,7 @@ def export_with_openscad(
     scad: str,
     executable: str = "openscad",
     output_format: str = "png",
-    timeout: int = 60,
+    timeout: int = 180,
 ) -> ExportResult:
     """Write SCAD and export PNG or STL without requiring OpenSCAD at import time."""
     if output_format not in {"png", "stl"}:

@@ -24,6 +24,7 @@ from scad_generator import (
     generate_armor_scad,
     generate_scad,
     has_visible_components,
+    resolve_bracer_metrics,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from ui_params import (
@@ -308,25 +309,85 @@ else:
             help="Adds sandable stock to exterior shell surfaces without reducing the arm cavity or closure passages.",
         )
 
-        st.subheader("Decoration Preset")
+        st.subheader("Decoration")
         preset_names = tuple(BRACER_DECORATION_PRESETS)
         default_preset = "Plain"
         decoration_preset = st.selectbox(
-            "Preset",
+            "Decoration",
             preset_names,
             index=preset_names.index(default_preset),
-            help="Choose one deliberate bracer decoration layout.",
+            key="armor_bracer_decoration",
+            help="Plain shell or a broad raised exterior panel for maker-finished original decoration.",
         )
         detail_options = dict(BRACER_DECORATION_PRESETS[decoration_preset])
 
-        st.subheader("Decoration Settings")
-        bracer_metrics["bracer_detail_depth_mm"] = st.number_input(
-            "Detail height (mm)", 0.8, 6.0,
-            float(DEFAULT_BRACER_METRICS["bracer_detail_depth_mm"]), 0.1,
-            key="armor_bracer_detail_depth_mm",
-            help="Raised trim, ridge, rivet, and motif height; clamped relative to wall thickness.",
-            disabled=decoration_preset == "Plain",
-        )
+        if decoration_preset == "Raised Design Panel":
+            panel_seed = dict(bracer_metrics)
+            for name in (
+                "bracer_panel_length_mm",
+                "bracer_panel_width_mm",
+                "bracer_panel_height_mm",
+                "bracer_panel_edge_roundness_mm",
+                "bracer_panel_position_mm",
+            ):
+                if f"armor_{name}" in st.session_state:
+                    panel_seed[name] = st.session_state[f"armor_{name}"]
+            panel_bounds, _ = resolve_bracer_metrics(panel_seed)
+
+            st.subheader("Raised Design Panel")
+            panel_col1, panel_col2, panel_col3 = st.columns(3)
+            with panel_col1:
+                bracer_metrics["bracer_panel_length_mm"] = st.number_input(
+                    "Panel length (mm)",
+                    18.0,
+                    float(panel_bounds["bracer_panel_usable_length_mm"]),
+                    float(panel_bounds["bracer_panel_length_mm"]),
+                    1.0,
+                    key="armor_bracer_panel_length_mm",
+                    help="Wrist-to-forearm span of the raised maker-finished field.",
+                )
+                bracer_metrics["bracer_panel_height_mm"] = st.number_input(
+                    "Panel height (mm)",
+                    0.5,
+                    float(max(0.8, min(panel_bounds["bracer_wall_thickness_mm"] * 0.72, panel_bounds["bracer_depth_mm"] * 0.08, 4.0))),
+                    float(panel_bounds["bracer_panel_height_mm"]),
+                    0.1,
+                    key="armor_bracer_panel_height_mm",
+                    help="How far the panel rises from the shell; kept shallow for printing and sanding.",
+                )
+            with panel_col2:
+                bracer_metrics["bracer_panel_width_mm"] = st.number_input(
+                    "Panel width (mm)",
+                    12.0,
+                    float(panel_bounds["bracer_panel_safe_front_width_mm"]),
+                    float(panel_bounds["bracer_panel_width_mm"]),
+                    1.0,
+                    key="armor_bracer_panel_width_mm",
+                    help="How much of the exterior front arc the panel occupies.",
+                )
+                bracer_metrics["bracer_panel_edge_roundness_mm"] = st.number_input(
+                    "Panel edge roundness (mm)",
+                    0.5,
+                    float(max(0.5, min(panel_bounds["bracer_panel_length_mm"], panel_bounds["bracer_panel_width_mm"]) * 0.28)),
+                    float(panel_bounds["bracer_panel_edge_roundness_mm"]),
+                    0.5,
+                    key="armor_bracer_panel_edge_roundness_mm",
+                    help="Softens panel corners and transitions where OpenSCAD hull geometry permits.",
+                )
+            with panel_col3:
+                position_limit = max(
+                    0.0,
+                    (panel_bounds["bracer_panel_usable_length_mm"] - panel_bounds["bracer_panel_length_mm"]) / 2,
+                )
+                bracer_metrics["bracer_panel_position_mm"] = st.slider(
+                    "Panel position toward forearm (mm)",
+                    float(-position_limit),
+                    float(position_limit),
+                    float(panel_bounds["bracer_panel_position_mm"]),
+                    1.0,
+                    key="armor_bracer_panel_position_mm",
+                    help="Negative moves toward the wrist; positive moves toward the forearm while staying within margins.",
+                )
 
         st.subheader("Binding / Closure")
         bracer_binding_style = st.selectbox(
@@ -411,7 +472,8 @@ else:
             st.success(f"No {armor_type.lower()} geometry warnings.")
     with audit_info_col:
         st.markdown("**Notes**")
-        st.info("Enabled bracer details: " + (", ".join(enabled_details) if enabled_details else "none") + ".")
+        detail_label = "Enabled bracer decoration" if armor_type == "Bracer" else "Enabled pauldron details"
+        st.info(detail_label + ": " + (", ".join(enabled_details) if enabled_details else "none") + ".")
         for message in armor_audit["info"]:
             st.info(message)
     with audit_pass_col:

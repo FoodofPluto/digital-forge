@@ -5,7 +5,7 @@ GUARD_STYLES = ("straight", "crescent", "downturned", "disk")
 POMMEL_STYLES = ("sphere", "wheel", "ring", "spike")
 ARMOR_TYPES = ("Bracer", "Pauldron")
 BRACER_STYLES = ("Plain",)
-BRACER_DETAIL_OPTIONS = ("raised_trim", "rivets", "center_ridge", "spikes", "runes")
+BRACER_DETAIL_OPTIONS = ("raised_panel",)
 BRACER_BINDING_STYLES = ("None", "Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots")
 DEFAULT_BRACER_METRICS = {
     "bracer_length_mm": 180.0,
@@ -18,6 +18,11 @@ DEFAULT_BRACER_METRICS = {
     "bracer_opening_width_mm": 34.0,
     "bracer_detail_depth_mm": 2.2,
     "bracer_exterior_finishing_allowance_mm": 0.5,
+    "bracer_panel_length_mm": 105.0,
+    "bracer_panel_width_mm": 24.0,
+    "bracer_panel_height_mm": 1.6,
+    "bracer_panel_edge_roundness_mm": 5.0,
+    "bracer_panel_position_mm": 0.0,
 }
 PAULDRON_STYLES = ("Knight", "Barbarian", "Elven")
 PAULDRON_DETAIL_OPTIONS = ("raised_trim", "rivets", "spikes", "runes")
@@ -112,14 +117,8 @@ def normalize_bracer_detail_options(
     bracer_style: str = "Knight",
     detail_options: dict[str, bool] | None = None,
 ) -> dict[str, bool]:
-    """Return complete bracer detail flags. Legacy aggregate styles no longer add details."""
-    defaults = {
-        "raised_trim": False,
-        "rivets": False,
-        "center_ridge": False,
-        "spikes": False,
-        "runes": False,
-    }
+    """Return complete Bracer V1 decoration flags, ignoring removed legacy presets."""
+    defaults = {"raised_panel": False}
     if detail_options:
         defaults.update({name: bool(detail_options[name]) for name in BRACER_DETAIL_OPTIONS if name in detail_options})
     return defaults
@@ -181,6 +180,11 @@ def resolve_bracer_metrics(metrics: dict[str, float] | None = None) -> tuple[dic
         "bracer_opening_width_mm": source.get("bracer_opening_width_mm"),
         "bracer_detail_depth_mm": source.get("bracer_detail_depth_mm"),
         "bracer_exterior_finishing_allowance_mm": source.get("bracer_exterior_finishing_allowance_mm"),
+        "bracer_panel_length_mm": source.get("bracer_panel_length_mm"),
+        "bracer_panel_width_mm": source.get("bracer_panel_width_mm"),
+        "bracer_panel_height_mm": source.get("bracer_panel_height_mm"),
+        "bracer_panel_edge_roundness_mm": source.get("bracer_panel_edge_roundness_mm"),
+        "bracer_panel_position_mm": source.get("bracer_panel_position_mm"),
     }
     resolved = {
         "bracer_length_mm": length,
@@ -242,9 +246,6 @@ def resolve_bracer_metrics(metrics: dict[str, float] | None = None) -> tuple[dic
         )
 
     trim_width = clamp(length * 0.075, 6.0, 18.0)
-    panel_length = max(12.0, length - trim_width * 3.4)
-    rivet_diameter = clamp(thickness * 1.35, 3.0, min(8.5, min(wrist, forearm) * 0.09))
-    spike_height = clamp(thickness * 2.3, 5.0, min(18.0, depth * 0.26))
     shell_side_width = max(0.0, (min(wrist, forearm) - opening) / 2)
     binding_hole_diameter = clamp(thickness * 1.25, 3.0, 7.0)
     flange_width = clamp(max(thickness * 3.0, binding_hole_diameter * 2.6), 10.0, 20.0)
@@ -285,12 +286,73 @@ def resolve_bracer_metrics(metrics: dict[str, float] | None = None) -> tuple[dic
     loop_wall = clamp(max(1.8, thickness * 0.45), 1.8, 3.2)
     loop_height = clamp(loop_passage + loop_wall * 1.2, 5.0, flange_thickness * 1.1)
     loop_length = clamp(loop_passage + loop_wall * 2.2, 7.5, max(8.0, usable_binding_span / max(2, binding_count) * 0.42))
+
+    panel_margin = max(trim_width * 1.35, length * 0.12, 14.0)
+    panel_usable_length = max(18.0, length - panel_margin * 2)
+    panel_length_default = min(DEFAULT_BRACER_METRICS["bracer_panel_length_mm"], panel_usable_length)
+    panel_length = clamp(
+        _finite_float(source.get("bracer_panel_length_mm"), panel_length_default),
+        18.0,
+        panel_usable_length,
+    )
+    min_shell_width = min(wrist, forearm)
+    safe_front_width = max(12.0, min(min_shell_width * 0.58, min_shell_width - opening - thickness * 3.0))
+    panel_width_default = min(DEFAULT_BRACER_METRICS["bracer_panel_width_mm"], safe_front_width)
+    panel_width = clamp(
+        _finite_float(source.get("bracer_panel_width_mm"), panel_width_default),
+        12.0,
+        safe_front_width,
+    )
+    max_panel_height = max(0.8, min(thickness * 0.72, depth * 0.08, 4.0))
+    panel_height = clamp(
+        _finite_float(source.get("bracer_panel_height_mm"), DEFAULT_BRACER_METRICS["bracer_panel_height_mm"]),
+        0.5,
+        max_panel_height,
+    )
+    max_roundness = max(0.5, min(panel_length, panel_width) * 0.28)
+    panel_roundness = clamp(
+        _finite_float(
+            source.get("bracer_panel_edge_roundness_mm"),
+            min(DEFAULT_BRACER_METRICS["bracer_panel_edge_roundness_mm"], max_roundness),
+        ),
+        0.5,
+        max_roundness,
+    )
+    panel_position_limit = max(0.0, (panel_usable_length - panel_length) / 2)
+    panel_position = clamp(
+        _finite_float(source.get("bracer_panel_position_mm"), DEFAULT_BRACER_METRICS["bracer_panel_position_mm"]),
+        -panel_position_limit,
+        panel_position_limit,
+    )
+    panel_center_y = length / 2 + panel_position
+    panel_start_y = panel_center_y - panel_length / 2
+    panel_end_y = panel_center_y + panel_length / 2
+
+    for name, value in {
+        "bracer_panel_length_mm": panel_length,
+        "bracer_panel_width_mm": panel_width,
+        "bracer_panel_height_mm": panel_height,
+        "bracer_panel_edge_roundness_mm": panel_roundness,
+        "bracer_panel_position_mm": panel_position,
+    }.items():
+        fallback = DEFAULT_BRACER_METRICS.get(name, value)
+        if _finite_float(requested[name], fallback) != value:
+            warnings.append(f"{name} was clamped to {value:g}.")
+
     resolved.update(
         bracer_trim_width_mm=trim_width,
         bracer_panel_length_mm=panel_length,
-        bracer_panel_width_mm=clamp(min(wrist, forearm) * 0.30, 14.0, 44.0),
-        bracer_rivet_diameter_mm=rivet_diameter,
-        bracer_spike_height_mm=spike_height,
+        bracer_panel_width_mm=panel_width,
+        bracer_panel_height_mm=panel_height,
+        bracer_panel_edge_roundness_mm=panel_roundness,
+        bracer_panel_position_mm=panel_position,
+        bracer_panel_center_y_mm=panel_center_y,
+        bracer_panel_start_y_mm=panel_start_y,
+        bracer_panel_end_y_mm=panel_end_y,
+        bracer_panel_wrist_margin_mm=panel_start_y,
+        bracer_panel_forearm_margin_mm=length - panel_end_y,
+        bracer_panel_safe_front_width_mm=safe_front_width,
+        bracer_panel_usable_length_mm=panel_usable_length,
         bracer_binding_hole_diameter_mm=binding_hole_diameter,
         bracer_binding_margin_mm=binding_margin,
         bracer_closure_wrist_margin_mm=wrist_margin,
@@ -834,36 +896,15 @@ module debug_markers() {{
 
 def _bracer_style_geometry(style: str) -> str:
     """Return a style note; detail flags control bracer geometry."""
-    return "// Plain bracer aggregate style; decoration is controlled only by the decoration preset."
+    return "// Plain bracer aggregate style; Bracer V1 decoration is selected separately."
 
 
 def _bracer_detail_geometry(detail_options: dict[str, bool]) -> str:
     """Return optional detail geometry selected by UI flags."""
-    details: list[str] = []
-    if detail_options["raised_trim"]:
-        details.append("""// Optional raised trim: end bands and two longitudinal side rails.
-        bracer_trim_band(bracer_trim_width_mm/2);
-        bracer_trim_band(bracer_length_mm-bracer_trim_width_mm/2);
-        for (side=[-1, 1])
-            bracer_side_rail(side);""")
-    if detail_options["center_ridge"]:
-        details.append("""// Optional center ridge: longitudinal faceted crest on the top centerline.
-        bracer_center_ridge();""")
-    if detail_options["rivets"]:
-        details.append("""// Optional rivet detail: paired rows of low rounded caps.
-        for (side=[-1, 1])
-            for (y=[bracer_trim_width_mm*1.7, bracer_length_mm*0.38,
-                    bracer_length_mm*0.62, bracer_length_mm-bracer_trim_width_mm*1.7])
-                bracer_rivet(side, y);""")
-    if detail_options["spikes"]:
-        details.append("""// Optional controlled ornamental spikes with broad attached bases.
-        for (y=[bracer_length_mm*0.32, bracer_length_mm*0.5, bracer_length_mm*0.68])
-            bracer_spike(y);""")
-    if detail_options["runes"]:
-        details.append("""// Optional raised rune / motif: repeated symmetrical chevrons in a bounded panel.
-        for (y=[bracer_length_mm*0.38, bracer_length_mm*0.5, bracer_length_mm*0.62])
-            bracer_chevron_rune(y);""")
-    return "\n".join(details) if details else "// Plain bracer: no decorative geometry beyond the tapered shell."
+    if detail_options["raised_panel"]:
+        return """// Raised Design Panel: broad shallow exterior field for sanding, carving, paint, or attached original light details.
+        bracer_raised_design_panel();"""
+    return "// Plain bracer: no decorative geometry beyond the tapered shell."
 
 
 def _bracer_binding_positive(binding_style: str) -> str:
@@ -969,71 +1010,21 @@ module bracer_surface_detail(x, y, diameter, height) {{
             sphere(d=diameter);
 }}
 
-module bracer_long_bar(x, center_y, length, width, height) {{
-    hull() {{
-        for (end=[-1, 1])
-            bracer_surface_detail(x, center_y+end*length/2, width, height);
-    }}
-}}
-
-module bracer_plate_patch(center_y, length, width, height) {{
-    // Surface-following patch used for end bands and raised center plates.
+module bracer_raised_design_panel() {{
+    // Surface-following rounded rectangular boss on the exterior front centerline.
+    panel_round = min(bracer_panel_edge_roundness_mm,
+        min(bracer_panel_length_mm, bracer_panel_width_mm)/2);
+    corner_x = max(0, bracer_panel_width_mm/2 - panel_round);
+    corner_y = max(0, bracer_panel_length_mm/2 - panel_round);
     hull() {{
         for (side=[-1, 1])
             for (end=[-1, 1])
-                bracer_surface_detail(side*width/2, center_y+end*length/2,
-                    bracer_thickness_mm*1.35, height);
+                bracer_surface_detail(
+                    side*corner_x,
+                    bracer_panel_center_y_mm + end*corner_y,
+                    max(bracer_wall_thickness_mm, panel_round*2),
+                    bracer_panel_height_mm);
     }}
-}}
-
-module bracer_center_ridge() {{
-    hull() {{
-        bracer_surface_detail(0, bracer_trim_width_mm*1.55,
-            bracer_wall_thickness_mm*1.05, bracer_detail_depth_mm);
-        bracer_surface_detail(0, bracer_length_mm/2,
-            bracer_wall_thickness_mm*1.35, bracer_detail_depth_mm*1.15);
-        bracer_surface_detail(0, bracer_length_mm-bracer_trim_width_mm*1.55,
-            bracer_wall_thickness_mm*1.05, bracer_detail_depth_mm);
-    }}
-}}
-
-module bracer_side_rail(side) {{
-    hull() {{
-        for (y=[bracer_trim_width_mm*1.4, bracer_length_mm-bracer_trim_width_mm*1.4])
-            bracer_surface_detail(side*bracer_panel_width_mm*1.28, y,
-                bracer_wall_thickness_mm*1.05, bracer_detail_depth_mm*0.72);
-    }}
-}}
-
-module bracer_rivet(side, y) {{
-    bracer_surface_detail(side*bracer_panel_width_mm*1.35, y,
-        bracer_rivet_diameter_mm, bracer_rivet_diameter_mm*0.34);
-}}
-
-module bracer_spike(y) {{
-    translate([0, y, bracer_surface_z(0, y)+bracer_wall_thickness_mm*0.55]) {{
-        cylinder(h=bracer_wall_thickness_mm*0.65,
-            r=bracer_wall_thickness_mm*1.05);
-        translate([0, 0, bracer_wall_thickness_mm*0.45])
-            cylinder(h=bracer_spike_height_mm,
-                r1=bracer_wall_thickness_mm*0.95, r2=bracer_wall_thickness_mm*0.16);
-    }}
-}}
-
-module bracer_rune_stroke(x1, y1, x2, y2) {{
-    hull() {{
-        bracer_surface_detail(x1, y1, bracer_wall_thickness_mm*0.72, bracer_detail_depth_mm*0.45);
-        bracer_surface_detail(x2, y2, bracer_wall_thickness_mm*0.72, bracer_detail_depth_mm*0.45);
-    }}
-}}
-
-module bracer_chevron_rune(y) {{
-    rune_w = bracer_panel_width_mm*0.46;
-    rune_h = bracer_trim_width_mm*0.72;
-    bracer_rune_stroke(-rune_w, y-rune_h, 0, y);
-    bracer_rune_stroke(rune_w, y-rune_h, 0, y);
-    bracer_rune_stroke(-rune_w, y+rune_h, 0, y);
-    bracer_rune_stroke(rune_w, y+rune_h, 0, y);
 }}
 
 module bracer_shell_point(y, angle) {{
@@ -1053,12 +1044,6 @@ module bracer_shell() {{
                 bracer_shell_point(bracer_length_mm, bracer_angle_for_index(i+1, bracer_length_mm));
             }}
     }}
-}}
-
-module bracer_trim_band(y) {{
-    // Raised end trim bands reinforce the wrist and forearm ends visually.
-    bracer_plate_patch(y, bracer_trim_width_mm,
-        bracer_width_at(y)*0.72, bracer_detail_depth_mm);
 }}
 
 module bracer_outer_plate() {{

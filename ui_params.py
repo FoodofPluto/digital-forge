@@ -45,48 +45,8 @@ def build_bracer_generation_params(
 
 
 BRACER_DECORATION_PRESETS = {
-    "Plain": {
-        "raised_trim": False,
-        "rivets": False,
-        "center_ridge": False,
-        "spikes": False,
-        "runes": False,
-    },
-    "Raised Trim": {
-        "raised_trim": True,
-        "rivets": False,
-        "center_ridge": False,
-        "spikes": False,
-        "runes": False,
-    },
-    "Rivets": {
-        "raised_trim": True,
-        "rivets": True,
-        "center_ridge": False,
-        "spikes": False,
-        "runes": False,
-    },
-    "Center Ridge": {
-        "raised_trim": False,
-        "rivets": False,
-        "center_ridge": True,
-        "spikes": False,
-        "runes": False,
-    },
-    "Spikes": {
-        "raised_trim": False,
-        "rivets": False,
-        "center_ridge": True,
-        "spikes": True,
-        "runes": False,
-    },
-    "Runes / Motif": {
-        "raised_trim": False,
-        "rivets": False,
-        "center_ridge": False,
-        "spikes": False,
-        "runes": True,
-    },
+    "Plain": {"raised_panel": False},
+    "Raised Design Panel": {"raised_panel": True},
 }
 
 
@@ -109,13 +69,7 @@ def build_pauldron_generation_params(
 
 def enabled_bracer_detail_labels(detail_options: dict[str, bool]) -> list[str]:
     """Return stable user-facing labels for enabled bracer detail flags."""
-    labels = {
-        "raised_trim": "Raised trim",
-        "rivets": "Rivets",
-        "center_ridge": "Center ridge",
-        "spikes": "Spikes",
-        "runes": "Runes / motif",
-    }
+    labels = {"raised_panel": "Raised Design Panel"}
     normalized = {name: bool(detail_options.get(name, False)) for name in BRACER_DETAIL_OPTIONS}
     return [labels[name] for name in BRACER_DETAIL_OPTIONS if normalized[name]]
 
