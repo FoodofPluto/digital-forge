@@ -1,17 +1,27 @@
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
 from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry
-from preview_service import build_openscad_command, export_with_openscad
+from preview_service import (
+    BRACER_CAMERA_PRESETS,
+    DEFAULT_OPENSCAD_TIMEOUT_SECONDS,
+    build_openscad_command,
+    export_preview_set,
+    export_with_openscad,
+)
 from realism_rules import check_realism
 from scad_generator import (
     ARMOR_TYPES,
     BLADE_STYLES,
     BRACER_BINDING_STYLES,
+    BRACER_PANEL_ANGLE_SEGMENTS,
+    BRACER_PANEL_LENGTH_SEGMENTS,
+    BRACER_PANEL_TYPES,
     BRACER_STYLES,
+    DEFAULT_BRACER_METRICS,
     PAULDRON_STYLES,
     GUARD_STYLES,
     VISIBILITY_PRESETS,
@@ -27,6 +37,8 @@ from scad_generator import (
     get_guard_rotation,
     has_visible_components,
     bracer_closure_layout_metrics,
+    normalize_bracer_panel_type,
+    resolve_render_quality_fn,
     resolve_bracer_metrics,
     resolve_pauldron_metrics,
     resolve_tang_details,
@@ -152,6 +164,19 @@ def test_bracer_generation_returns_valid_scad_text():
     assert "bracer();" in scad
 
 
+def test_default_bracer_metrics_use_wearer_specific_prototype_values():
+    metrics, warnings = resolve_bracer_metrics()
+    assert not warnings
+    assert DEFAULT_BRACER_METRICS["bracer_length_mm"] == 241.30
+    assert DEFAULT_BRACER_METRICS["bracer_depth_mm"] == 69.85
+    assert DEFAULT_BRACER_METRICS["wrist_width_mm"] == 76.20
+    assert DEFAULT_BRACER_METRICS["forearm_width_mm"] == 114.30
+    assert metrics["bracer_length_mm"] == 241.30
+    assert metrics["bracer_depth_mm"] == 69.85
+    assert metrics["wrist_width_mm"] == 76.20
+    assert metrics["forearm_width_mm"] == 114.30
+
+
 def test_pauldron_generation_returns_valid_scad_text():
     scad = generate_armor_scad(
         armor_type="Pauldron",
@@ -200,9 +225,11 @@ def test_raised_design_panel_generates_positive_panel_geometry():
     )
     assert "Bracer details: raised_panel" in scad
     assert "module bracer_raised_design_panel()" in scad
-    assert "Raised Design Panel: broad shallow exterior field" in scad
+    assert "Raised Design Panel: typed exterior field" in scad
     assert "bracer_raised_design_panel();" in scad
-    assert "hull()" in scad
+    panel_module = scad.split("module bracer_raised_design_panel()", 1)[1].split("module bracer_shell_point", 1)[0]
+    assert "polyhedron(" in panel_module
+    assert "bracer_panel_shell_point" in panel_module
 
 
 def test_pauldron_detail_options_control_optional_scad_features():
@@ -317,7 +344,7 @@ def test_bracer_new_shell_values_and_unsafe_opening_are_clamped():
     )
     assert metrics["bracer_wall_thickness_mm"] < metrics["bracer_depth_mm"] / 2
     layout = bracer_closure_layout_metrics(metrics)
-    assert layout["hole_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert layout["hole_flange_margin_mm"] >= metrics["bracer_lacing_edge_margin_mm"]
     assert metrics["bracer_detail_depth_mm"] <= metrics["bracer_wall_thickness_mm"] * 1.1
     assert metrics["bracer_exterior_finishing_allowance_mm"] <= metrics["bracer_wall_thickness_mm"] * 0.28
     assert any("inner cavity fits" in warning for warning in warnings)
@@ -326,9 +353,10 @@ def test_bracer_new_shell_values_and_unsafe_opening_are_clamped():
 
 def test_default_raised_design_panel_values_generate_valid_scad():
     scad = generate_armor_scad(detail_options={"raised_panel": True})
-    assert "bracer_panel_length_mm = 105;" in scad
-    assert "bracer_panel_width_mm = 24;" in scad
-    assert "bracer_panel_height_mm = 1.6;" in scad
+    assert "Bracer panel type: Wide Panel" in scad
+    assert "bracer_panel_length_mm = 132;" in scad
+    assert "bracer_panel_width_mm = 56;" in scad
+    assert "bracer_panel_height_mm = 4;" in scad
     assert "nan" not in scad.lower()
     assert " = inf;" not in scad.lower()
     assert " = -inf;" not in scad.lower()
@@ -352,7 +380,9 @@ def test_raised_design_panel_metrics_are_bounded_to_shell():
     )
     assert metrics["bracer_panel_length_mm"] <= metrics["bracer_panel_usable_length_mm"]
     assert metrics["bracer_panel_width_mm"] <= metrics["bracer_panel_safe_front_width_mm"]
-    assert metrics["bracer_panel_height_mm"] <= metrics["bracer_wall_thickness_mm"] * 0.72
+    assert metrics["bracer_panel_width_mm"] <= metrics["bracer_panel_max_width_mm"]
+    assert metrics["bracer_panel_height_mm"] <= metrics["bracer_panel_max_height_mm"]
+    assert metrics["bracer_panel_height_mm"] >= metrics["bracer_panel_min_height_mm"]
     assert metrics["bracer_panel_edge_roundness_mm"] <= min(
         metrics["bracer_panel_length_mm"], metrics["bracer_panel_width_mm"]
     ) * 0.28
@@ -363,6 +393,127 @@ def test_raised_design_panel_metrics_are_bounded_to_shell():
     assert any("bracer_panel_height_mm" in warning for warning in warnings)
     assert any("bracer_panel_edge_roundness_mm" in warning for warning in warnings)
     assert any("bracer_panel_position_mm" in warning for warning in warnings)
+
+
+def test_raised_panel_uses_shell_derived_outward_projection():
+    scad = generate_armor_scad(detail_options={"raised_panel": True})
+    panel_module = scad.split("module bracer_raised_design_panel()", 1)[1].split("module bracer_shell_point", 1)[0]
+    assert "Shell-derived raised skin" in panel_module
+    assert "bracer_panel_shell_point(yi, ai, bracer_panel_height_mm)" in panel_module
+    assert "bracer_wall_thickness_mm/2+bracer_exterior_finishing_allowance_mm+raise" in scad
+    assert "bracer_surface_z(x, y)" in scad
+    assert "for (col=[0:cols])" not in panel_module
+    assert "for (row=[0:rows])" not in panel_module
+    assert "cube([" not in panel_module
+
+
+def test_raised_panel_has_bounded_low_complexity_mesh():
+    scad = generate_armor_scad(detail_options={"raised_panel": True})
+    panel_region = scad.split("function bracer_panel_y_for_index", 1)[1].split("module bracer_shell_point", 1)[0]
+    assert f"bracer_panel_angle_segments = {BRACER_PANEL_ANGLE_SEGMENTS};" in scad
+    assert f"bracer_panel_length_segments = {BRACER_PANEL_LENGTH_SEGMENTS};" in scad
+    assert BRACER_PANEL_ANGLE_SEGMENTS <= 16
+    assert BRACER_PANEL_LENGTH_SEGMENTS <= 16
+    assert "sample_d" not in panel_region
+    assert "bracer_surface_detail(" not in panel_region
+    assert "hull()" not in panel_region
+    assert "minkowski" not in panel_region.lower()
+    assert panel_region.count("polyhedron(") == 1
+
+
+def test_render_quality_is_bounded_and_preview_lower_than_final():
+    preview = generate_armor_scad(detail_options={"raised_panel": True}, render_quality="preview")
+    preview_set = generate_armor_scad(detail_options={"raised_panel": True}, render_quality="preview_set")
+    final = generate_armor_scad(detail_options={"raised_panel": True}, render_quality="final")
+    assert "$fn = 40;" in preview
+    assert "$fn = 56;" in preview_set
+    assert "$fn = 96;" in final
+    assert resolve_render_quality_fn(999) == 96
+    assert resolve_render_quality_fn(12) == 24
+
+
+def test_bracer_panel_type_normalization_and_legacy_calls_are_safe():
+    assert BRACER_PANEL_TYPES == ("Wide Panel", "Narrow Panel")
+    assert normalize_bracer_panel_type(None) == "Wide Panel"
+    assert normalize_bracer_panel_type("Narrow Panel") == "Narrow Panel"
+    assert normalize_bracer_panel_type("unsupported") == "Wide Panel"
+    legacy, _ = resolve_bracer_metrics({"bracer_panel_width_mm": 36})
+    unsupported, warnings = resolve_bracer_metrics(
+        {"bracer_panel_type": "unsupported", "bracer_panel_width_mm": 36}
+    )
+    assert legacy["bracer_panel_type"] == "Wide Panel"
+    assert unsupported["bracer_panel_type"] == "Wide Panel"
+    assert any("bracer_panel_type" in warning for warning in warnings)
+
+
+def test_plain_bracer_ignores_panel_type_and_dimensions_for_geometry():
+    scad = generate_armor_scad(
+        detail_options={"raised_panel": False},
+        metrics={
+            "bracer_panel_type": "Narrow Panel",
+            "bracer_panel_width_mm": 999,
+            "bracer_panel_height_mm": 99,
+        },
+    )
+    assert "Bracer details: none" in scad
+    assert "Bracer panel type: Narrow Panel" in scad
+    assert "bracer_raised_design_panel();" not in scad
+
+
+def test_wide_and_narrow_panel_width_ranges_are_derived_and_clamped():
+    wide, _ = resolve_bracer_metrics({"bracer_panel_type": "Wide Panel"})
+    narrow, _ = resolve_bracer_metrics({"bracer_panel_type": "Narrow Panel"})
+    previous_default_max = min(
+        min(wide["wrist_width_mm"], wide["forearm_width_mm"]) * 0.58,
+        min(wide["wrist_width_mm"], wide["forearm_width_mm"])
+        - wide["bracer_opening_width_mm"]
+        - wide["bracer_wall_thickness_mm"] * 3.0,
+    )
+    assert wide["bracer_wide_panel_max_width_mm"] > previous_default_max
+    assert wide["bracer_panel_width_mm"] > narrow["bracer_panel_width_mm"] * 1.75
+    assert wide["bracer_panel_min_width_mm"] > narrow["bracer_panel_max_width_mm"]
+    assert wide["bracer_panel_min_width_mm"] <= wide["bracer_panel_width_mm"] <= wide["bracer_panel_max_width_mm"]
+    assert narrow["bracer_narrow_panel_min_width_mm"] == 22.0
+    assert narrow["bracer_narrow_panel_max_width_mm"] < wide["bracer_wide_panel_min_width_mm"]
+    stale, warnings = resolve_bracer_metrics(
+        {"bracer_panel_type": "Narrow Panel", "bracer_panel_width_mm": wide["bracer_wide_panel_max_width_mm"]}
+    )
+    assert stale["bracer_panel_width_mm"] == stale["bracer_panel_max_width_mm"]
+    assert any("bracer_panel_width_mm" in warning for warning in warnings)
+
+
+def test_wide_and_narrow_panels_remain_inside_safe_exterior_region():
+    for panel_type in BRACER_PANEL_TYPES:
+        metrics, _ = resolve_bracer_metrics(
+            {"bracer_panel_type": panel_type, "bracer_panel_width_mm": 999}
+        )
+        assert metrics["bracer_panel_width_mm"] <= metrics["bracer_panel_safe_front_width_mm"]
+        assert metrics["bracer_panel_width_mm"] <= metrics["bracer_panel_max_width_mm"]
+        assert metrics["bracer_panel_start_y_mm"] >= 0
+        assert metrics["bracer_panel_end_y_mm"] <= metrics["bracer_length_mm"]
+
+
+def test_panel_height_range_expands_above_previous_bounds_and_clamps_excess():
+    metrics, _ = resolve_bracer_metrics()
+    narrow, _ = resolve_bracer_metrics({"bracer_panel_type": "Narrow Panel"})
+    old_min_height = 0.5
+    old_max_height = max(
+        0.8,
+        min(
+            metrics["bracer_wall_thickness_mm"] * 0.72,
+            metrics["bracer_depth_mm"] * 0.08,
+            4.0,
+        ),
+    )
+    assert metrics["bracer_panel_min_height_mm"] > old_min_height
+    assert metrics["bracer_panel_max_height_mm"] > old_max_height
+    assert metrics["bracer_panel_height_mm"] > 2.4
+    assert narrow["bracer_panel_height_mm"] > old_min_height
+    assert narrow["bracer_panel_height_mm"] < metrics["bracer_panel_height_mm"]
+    assert metrics["bracer_panel_min_height_mm"] <= metrics["bracer_panel_height_mm"] <= metrics["bracer_panel_max_height_mm"]
+    excessive, warnings = resolve_bracer_metrics({"bracer_panel_height_mm": 99})
+    assert excessive["bracer_panel_height_mm"] == excessive["bracer_panel_max_height_mm"]
+    assert any("bracer_panel_height_mm" in warning for warning in warnings)
 
 
 def test_plain_bracer_has_no_panel_specific_audit_messages():
@@ -435,8 +586,8 @@ def test_lacing_holes_are_complete_and_clear_of_opening_bounds():
     )
     layout = bracer_closure_layout_metrics(metrics)
     hole_depth = metrics["bracer_binding_hole_diameter_mm"]
-    assert layout["hole_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
-    assert metrics["bracer_closure_edge_margin_mm"] >= max(2.4, hole_depth * 0.45)
+    assert layout["hole_flange_margin_mm"] >= metrics["bracer_lacing_edge_margin_mm"]
+    assert metrics["bracer_lacing_edge_margin_mm"] >= max(3.2, hole_depth * 0.55)
     assert any("opening_width" in warning or "closure" in warning for warning in warnings)
     scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Lacing Holes")
     assert "module bracer_closure_flange(side)" in scad
@@ -449,7 +600,7 @@ def test_lacing_loop_geometry_has_outer_body_and_subtractive_passage():
     metrics, _ = resolve_bracer_metrics({"bracer_wall_thickness_mm": 4})
     scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Lacing Loops")
     layout = bracer_closure_layout_metrics(metrics)
-    loop_module = scad.split("module bracer_lacing_loop", 1)[1].split("module bracer_reinforced_slot_frame", 1)[0]
+    loop_module = scad.split("module bracer_lacing_loop", 1)[1].split("module bracer_buckle_receiver_ear", 1)[0]
     assert "difference()" in loop_module
     assert "bracer_external_feature_center_x(side, y, bracer_loop_height_mm)" in loop_module
     assert "cylinder(h=bracer_loop_passage_diameter_mm + bracer_loop_wall_thickness_mm*4" in loop_module
@@ -470,27 +621,146 @@ def test_strap_slots_are_complete_rounded_passages_clear_of_opening_bounds():
         }
     )
     layout = bracer_closure_layout_metrics(metrics)
-    assert layout["strap_slot_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert layout["strap_slot_flange_margin_mm"] >= metrics["bracer_strap_slot_edge_margin_mm"]
+    assert layout["strap_slot_inset_mm"] >= 2.8
+    assert layout["slot_cutter_depth_mm"] > metrics["bracer_closure_flange_thickness_mm"] + metrics["bracer_closure_slot_inset_mm"] * 2
+    assert layout["slot_cutter_overtravels_inset_and_frame"]
     assert metrics["bracer_strap_slot_width_mm"] > metrics["bracer_strap_width_nominal_mm"]
     assert warnings
     scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Strap Slots")
     assert "module bracer_rounded_slot_cutter" in scad
     assert "Slot cutter axis: radial XZ flange normal" in scad
-    assert "bracer_closure_cutter_depth()" in scad
+    strap_module = scad.split("module bracer_strap_slot", 1)[1].split("module bracer_lacing_loop", 1)[0]
+    assert "bracer_slot_center_x(side, y)" in strap_module
+    assert "bracer_slot_cutter_depth()" in strap_module
+    assert "bracer_closure_cutter_depth()" not in strap_module
 
 
-def test_buckle_ready_geometry_has_anchor_and_larger_access_passages():
+def test_buckle_receiver_has_exterior_ears_gap_and_pin_passage():
     metrics, _ = resolve_bracer_metrics({"bracer_wall_thickness_mm": 4.5})
     scad = generate_armor_scad(metrics=metrics, bracer_binding_style="Buckle-Ready Slots")
     layout = bracer_closure_layout_metrics(metrics)
     assert metrics["bracer_buckle_slot_width_mm"] > metrics["bracer_strap_slot_width_mm"]
     assert metrics["bracer_buckle_slot_length_mm"] > metrics["bracer_strap_slot_length_mm"]
-    assert layout["buckle_slot_flange_margin_mm"] > 0
-    assert "bracer_strap_anchor_frame(-1" in scad
-    assert "bracer_buckle_access_frame(1" in scad
-    assert "bracer_strap_anchor_slot(-1" in scad
-    assert "bracer_buckle_access_slot(1" in scad
-    assert "bracer_strap_anchor_pad" not in scad
+    assert layout["buckle_slot_flange_margin_mm"] >= metrics["bracer_buckle_slot_edge_margin_mm"]
+    assert len(layout["hardware_positions_y"]) == 3
+    assert layout["hardware_positions_y"] == sorted(layout["hardware_positions_y"])
+    assert layout["hardware_positions_y"][0] >= metrics["bracer_closure_wrist_margin_mm"]
+    assert layout["hardware_positions_y"][-1] <= metrics["bracer_length_mm"] - metrics["bracer_closure_elbow_margin_mm"]
+    assert layout["slot_cutter_depth_mm"] > (
+        metrics["bracer_closure_flange_thickness_mm"]
+        + metrics["bracer_wall_thickness_mm"] * 0.55
+        + metrics["bracer_closure_slot_inset_mm"] * 2
+    )
+    assert layout["buckle_receiver_has_two_ears"]
+    assert layout["buckle_receiver_has_central_gap"]
+    assert layout["buckle_pin_cutter_overtravels_ears"] > metrics["bracer_buckle_receiver_total_length_mm"]
+    assert "bracer_buckle_receiver_ear(side, y, ear_side)" in scad
+    assert "for (ear_side=[-1, 1])" in scad
+    assert "bracer_buckle_receiver_gap_mm/2 + bracer_buckle_receiver_ear_thickness_mm/2" in scad
+    assert "bracer_buckle_receiver(1, bracer_hardware_slot_y(i));" in scad
+    assert "bracer_strap_slot(-1, bracer_hardware_slot_y(i));" in scad
+    assert "bracer_buckle_receiver_slot(1, bracer_hardware_slot_y(i));" in scad
+    assert "bracer_buckle_pin_cutter(1, bracer_hardware_slot_y(i));" in scad
+    assert "bracer_buckle_receiver_gap_mm\n                    + bracer_buckle_receiver_ear_thickness_mm*2 + 4" in scad
+    bracer_module = scad.split("module bracer() ", 1)[1]
+    union_before_cutters = bracer_module.split("bracer_binding_cutters();", 1)[0]
+    assert "bracer_binding_positive();" in union_before_cutters
+    assert "bracer_binding_cutters();" in bracer_module
+    assert "bracer_reinforced_slot_frame" not in scad
+    assert "bracer_strap_anchor_frame" not in scad
+    assert "bracer_buckle_access_frame" not in scad
+    assert "bracer_strap_anchor_slot" not in scad
+    assert "bracer_buckle_access_slot" not in scad
+
+
+def test_buckle_receiver_orientation_is_exterior_across_default_taper():
+    for metric_overrides in (
+        {},
+        {"wrist_width_mm": 62, "forearm_width_mm": 96, "bracer_opening_width_mm": 42},
+        {"wrist_width_mm": 90, "forearm_width_mm": 138, "bracer_opening_width_mm": 54},
+    ):
+        metrics, _ = resolve_bracer_metrics(metric_overrides)
+        layout = bracer_closure_layout_metrics(metrics)
+        assert layout["buckle_receiver_outward_axis"] == "bracer_outward_normal_xz"
+        assert layout["buckle_receiver_min_offset_from_edge_mm"] > 0
+        assert layout["buckle_receiver_min_offset_from_edge_mm"] > layout["inner_opening_boundary_offset_mm"]
+        assert layout["buckle_receiver_center_offset_from_edge_mm"] > layout["buckle_slot_cutter_center_offset_from_edge_mm"]
+
+    scad = generate_armor_scad(bracer_binding_style="Buckle-Ready Slots")
+    receiver_module = scad.split("module bracer_buckle_receiver_ear", 1)[1].split("module bracer_buckle_receiver(side, y)", 1)[0]
+    assert "bracer_buckle_receiver_center_x(side, y)" in receiver_module
+    assert "bracer_buckle_receiver_center_z(side, y)" in receiver_module
+    assert "bracer_slot_center_x(side, y)" not in receiver_module
+    assert "bracer_slot_center_z(side, y)" not in receiver_module
+    assert "bracer_flange_center_x(side, y)\n        + bracer_outward_normal_x(side, y)" in scad
+
+
+def test_buckle_receiver_pin_and_ear_dimensions_are_clamped_safely():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "bracer_buckle_receiver_gap_mm": 1,
+            "bracer_buckle_receiver_projection_mm": 20,
+            "bracer_buckle_receiver_ear_thickness_mm": 1,
+            "bracer_buckle_pin_diameter_mm": 10,
+        }
+    )
+    assert metrics["bracer_buckle_receiver_gap_mm"] >= 8.0
+    assert metrics["bracer_buckle_receiver_projection_mm"] <= 8.0
+    assert metrics["bracer_buckle_receiver_ear_thickness_mm"] >= max(3.0, metrics["bracer_buckle_pin_diameter_mm"] * 0.9)
+    assert metrics["bracer_buckle_pin_diameter_mm"] <= 4.0
+    assert metrics["bracer_buckle_receiver_projection_mm"] - metrics["bracer_buckle_pin_diameter_mm"] >= (
+        metrics["bracer_buckle_pin_wall_margin_mm"] * 2
+    )
+    assert any("bracer_buckle_receiver_gap_mm" in warning for warning in warnings)
+    assert any("bracer_buckle_receiver_projection_mm" in warning for warning in warnings)
+    assert any("bracer_buckle_receiver_ear_thickness_mm" in warning for warning in warnings)
+    assert any("bracer_buckle_pin_diameter_mm" in warning for warning in warnings)
+
+
+def test_buckle_receiver_complexity_stays_bounded():
+    scad = generate_armor_scad(bracer_binding_style="Buckle-Ready Slots")
+    receiver_section = scad.split("module bracer_buckle_receiver_ear", 1)[1].split("module bracer_binding_positive", 1)[0]
+    assert "minkowski" not in receiver_section.lower()
+    assert "polyhedron" not in receiver_section.lower()
+    assert "hull()" not in receiver_section
+    assert receiver_section.count("cube(") == 1
+    assert receiver_section.count("cylinder(") == 1
+    assert "[0:bracer_binding_count-1]" not in receiver_section
+
+
+def test_small_bracer_dimensions_compress_hardware_slot_group_or_warn():
+    metrics, warnings = resolve_bracer_metrics(
+        {
+            "bracer_length_mm": 60,
+            "wrist_width_mm": 48,
+            "forearm_width_mm": 58,
+            "bracer_opening_width_mm": 42,
+            "bracer_wall_thickness_mm": 4,
+        }
+    )
+    layout = bracer_closure_layout_metrics(metrics)
+    assert layout["slot_group_compressed"]
+    assert layout["hardware_positions_y"][0] >= metrics["bracer_closure_wrist_margin_mm"]
+    assert layout["hardware_positions_y"][-1] <= metrics["bracer_length_mm"] - metrics["bracer_closure_elbow_margin_mm"]
+    assert any("hardware_slot_spacing" in warning for warning in warnings)
+
+
+def test_panel_types_coexist_with_approved_closure_styles():
+    for panel_type in BRACER_PANEL_TYPES:
+        for closure in BRACER_BINDING_STYLES:
+            scad = generate_armor_scad(
+                detail_options={"raised_panel": True},
+                metrics={"bracer_panel_type": panel_type},
+                bracer_binding_style=closure,
+            )
+            assert "bracer();" in scad
+            assert "nan" not in scad.lower()
+            assert "undefined" not in scad.lower()
+            if closure == "Strap Slots":
+                assert "bracer_strap_slot(side, bracer_hardware_slot_y(i));" in scad
+            if closure == "Buckle-Ready Slots":
+                assert "bracer_buckle_receiver_slot(1, bracer_hardware_slot_y(i));" in scad
 
 
 def test_finishing_allowance_adds_exterior_stock_without_shrinking_passages_or_fit():
@@ -537,12 +807,12 @@ def test_bracer_binding_styles_emit_expected_positive_and_subtractive_geometry()
     assert "Compact external lacing loops" in loops
     assert "bracer_lacing_loop(side, bracer_binding_y(i));" in loops
     assert "Strap slots: paired subtractive rectangular slots" in slots
-    assert "bracer_strap_slot(side, bracer_binding_y(i+1));" in slots
-    assert "Buckle-ready reinforced frames" in buckle
-    assert "bracer_strap_anchor_frame(-1, bracer_binding_y(i+1));" in buckle
-    assert "bracer_buckle_access_frame(1, bracer_binding_y(i+1));" in buckle
-    assert "bracer_strap_anchor_slot(-1, bracer_binding_y(i+1));" in buckle
-    assert "bracer_buckle_access_slot(1, bracer_binding_y(i+1));" in buckle
+    assert "bracer_strap_slot(side, bracer_hardware_slot_y(i));" in slots
+    assert "Exterior buckle receiver" in buckle
+    assert "bracer_buckle_receiver(1, bracer_hardware_slot_y(i));" in buckle
+    assert "bracer_strap_slot(-1, bracer_hardware_slot_y(i));" in buckle
+    assert "bracer_buckle_receiver_slot(1, bracer_hardware_slot_y(i));" in buckle
+    assert "bracer_buckle_pin_cutter(1, bracer_hardware_slot_y(i));" in buckle
     assert "Bracer binding: Buckle-Ready Slots" in legacy_buckle
 
 
@@ -608,7 +878,7 @@ def test_bracer_closure_cutter_orientation_regression_not_shell_tangent():
 def test_default_lacing_hole_has_complete_flange_margin_and_crossing_cutter():
     layout = bracer_closure_layout_metrics()
     metrics = layout["metrics"]
-    assert layout["hole_flange_margin_mm"] >= metrics["bracer_closure_edge_margin_mm"]
+    assert layout["hole_flange_margin_mm"] >= metrics["bracer_lacing_edge_margin_mm"]
     assert layout["cutter_crosses_flange_thickness"] > metrics["bracer_closure_flange_thickness_mm"]
     assert metrics["bracer_closure_flange_outward_offset_mm"] > metrics["bracer_closure_flange_thickness_mm"] / 2
 
@@ -1394,6 +1664,95 @@ def test_preview_rejects_empty_scad_and_invalid_executable_path():
     invalid_path = export_with_openscad("cube(1);", r"C:\missing\openscad.exe")
     assert empty.error_code == "invalid_scad"
     assert invalid_path.error_code == "invalid_executable"
+
+
+def test_bracer_camera_presets_are_complete_and_deterministic():
+    assert tuple(BRACER_CAMERA_PRESETS) == (
+        "front_exterior",
+        "front_three_quarter",
+        "side_profile",
+        "closure_side",
+        "top_oblique",
+        "rear_three_quarter",
+    )
+    assert all(isinstance(value, str) and value.count(",") == 6 for value in BRACER_CAMERA_PRESETS.values())
+    assert BRACER_CAMERA_PRESETS["front_exterior"] == "0,120,42,68,0,0,520"
+    assert BRACER_CAMERA_PRESETS["closure_side"] == "70,118,12,92,0,148,260"
+    assert BRACER_CAMERA_PRESETS["closure_side"] != "-150,118,38,70,0,92,540"
+
+
+def test_export_preview_set_builds_named_camera_exports():
+    calls = []
+    output_dir = Path("generated/test_preview_set_success")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == DEFAULT_OPENSCAD_TIMEOUT_SECONDS
+        output_path = Path(command[command.index("-o") + 1])
+        output_path.write_bytes(b"png")
+        return CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    with patch("preview_service.GENERATED_DIR", output_dir), patch("preview_service.subprocess.run", side_effect=fake_run):
+        result = export_preview_set("cube(1);", "openscad")
+
+    assert result.success
+    assert set(result.successful_paths) == set(BRACER_CAMERA_PRESETS)
+    assert [Path(command[command.index("-o") + 1]).name for command in calls] == [
+        f"bracer_{name}.png" for name in BRACER_CAMERA_PRESETS
+    ]
+    assert all("--camera" in command for command in calls)
+    assert [command[command.index("--camera") + 1] for command in calls] == list(BRACER_CAMERA_PRESETS.values())
+    assert [Path(command[command.index("-o") + 1]).stem.removeprefix("bracer_") for command in calls] == list(BRACER_CAMERA_PRESETS)
+
+
+def test_export_preview_set_preserves_successes_when_one_view_fails():
+    output_dir = Path("generated/test_preview_set_partial")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(command, **kwargs):
+        output_path = Path(command[command.index("-o") + 1])
+        if output_path.name == "bracer_side_profile.png":
+            return CompletedProcess(args=command, returncode=1, stdout="", stderr="camera failed")
+        output_path.write_bytes(b"png")
+        return CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    with patch("preview_service.GENERATED_DIR", output_dir), patch("preview_service.subprocess.run", side_effect=fake_run):
+        result = export_preview_set("cube(1);", "openscad")
+
+    assert not result.success
+    assert "side_profile" in result.failures
+    assert result.failures["side_profile"].error_code == "command_failed"
+    assert len(result.successful_paths) == len(BRACER_CAMERA_PRESETS) - 1
+    assert "front_exterior" in result.successful_paths
+
+
+def test_export_preview_set_subprocess_timeout_is_graceful():
+    output_dir = Path("generated/test_preview_set_subprocess_timeout")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(command, **kwargs):
+        output_path = Path(command[command.index("-o") + 1])
+        if output_path.name == "bracer_side_profile.png":
+            raise TimeoutExpired(command, kwargs["timeout"])
+        output_path.write_bytes(b"png")
+        return CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    with patch("preview_service.GENERATED_DIR", output_dir), patch("preview_service.subprocess.run", side_effect=fake_run):
+        result = export_preview_set("cube(1);", "openscad", timeout=7)
+
+    assert not result.success
+    assert len(result.successful_paths) == len(BRACER_CAMERA_PRESETS) - 1
+    assert result.failures["side_profile"].error_code == "timeout"
+    assert "side_profile" in result.failures["side_profile"].message
+
+
+def test_export_preview_set_missing_executable_is_graceful():
+    with patch("preview_service.subprocess.run", side_effect=FileNotFoundError):
+        result = export_preview_set("cube(1);", "missing-openscad")
+    assert not result.success
+    assert set(result.failures) == set(BRACER_CAMERA_PRESETS)
+    assert all(view.error_code == "missing_executable" for view in result.failures.values())
 
 
 def _assembly_calls(scad: str) -> str:

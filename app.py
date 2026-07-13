@@ -1,18 +1,21 @@
 """Streamlit user interface for Digital Forge."""
 
 import os
+from io import BytesIO
+from zipfile import ZipFile
 
 import streamlit as st
 
 from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
 from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry
-from preview_service import export_with_openscad
+from preview_service import export_preview_set, export_with_openscad
 from realism_rules import check_realism
 from scad_generator import (
     ARMOR_TYPES,
     BLADE_STYLES,
     BRACER_BINDING_STYLES,
+    BRACER_PANEL_TYPES,
     DEFAULT_BRACER_METRICS,
     DEFAULT_PAULDRON_METRICS,
     COMPONENT_NAMES,
@@ -323,6 +326,8 @@ else:
 
         if decoration_preset == "Raised Design Panel":
             panel_seed = dict(bracer_metrics)
+            if "armor_bracer_panel_type" in st.session_state:
+                panel_seed["bracer_panel_type"] = st.session_state["armor_bracer_panel_type"]
             for name in (
                 "bracer_panel_length_mm",
                 "bracer_panel_width_mm",
@@ -335,6 +340,34 @@ else:
             panel_bounds, _ = resolve_bracer_metrics(panel_seed)
 
             st.subheader("Raised Design Panel")
+            panel_type = st.selectbox(
+                "Panel Type",
+                BRACER_PANEL_TYPES,
+                index=BRACER_PANEL_TYPES.index(panel_bounds["bracer_panel_type"]),
+                key="armor_bracer_panel_type",
+                help=(
+                    "Wide Panel provides a broad maker-finished surface. "
+                    "Narrow Panel provides a slimmer inscription or design field."
+                ),
+            )
+            panel_seed["bracer_panel_type"] = panel_type
+            panel_bounds, _ = resolve_bracer_metrics(panel_seed)
+            width_key = "armor_bracer_panel_width_mm"
+            if width_key in st.session_state:
+                st.session_state[width_key] = max(
+                    float(panel_bounds["bracer_panel_min_width_mm"]),
+                    min(float(st.session_state[width_key]), float(panel_bounds["bracer_panel_max_width_mm"])),
+                )
+                panel_seed["bracer_panel_width_mm"] = st.session_state[width_key]
+                panel_bounds, _ = resolve_bracer_metrics(panel_seed)
+            height_key = "armor_bracer_panel_height_mm"
+            if height_key in st.session_state:
+                st.session_state[height_key] = max(
+                    float(panel_bounds["bracer_panel_min_height_mm"]),
+                    min(float(st.session_state[height_key]), float(panel_bounds["bracer_panel_max_height_mm"])),
+                )
+                panel_seed["bracer_panel_height_mm"] = st.session_state[height_key]
+                panel_bounds, _ = resolve_bracer_metrics(panel_seed)
             panel_col1, panel_col2, panel_col3 = st.columns(3)
             with panel_col1:
                 bracer_metrics["bracer_panel_length_mm"] = st.number_input(
@@ -348,22 +381,25 @@ else:
                 )
                 bracer_metrics["bracer_panel_height_mm"] = st.number_input(
                     "Panel height (mm)",
-                    0.5,
-                    float(max(0.8, min(panel_bounds["bracer_wall_thickness_mm"] * 0.72, panel_bounds["bracer_depth_mm"] * 0.08, 4.0))),
+                    float(panel_bounds["bracer_panel_min_height_mm"]),
+                    float(panel_bounds["bracer_panel_max_height_mm"]),
                     float(panel_bounds["bracer_panel_height_mm"]),
                     0.1,
                     key="armor_bracer_panel_height_mm",
-                    help="How far the panel rises from the shell; kept shallow for printing and sanding.",
+                    help=(
+                        "Amount of exterior raised stock. Actual sanding or carving limits depend on print "
+                        "material and physical testing."
+                    ),
                 )
             with panel_col2:
                 bracer_metrics["bracer_panel_width_mm"] = st.number_input(
                     "Panel width (mm)",
-                    12.0,
-                    float(panel_bounds["bracer_panel_safe_front_width_mm"]),
+                    float(panel_bounds["bracer_panel_min_width_mm"]),
+                    float(panel_bounds["bracer_panel_max_width_mm"]),
                     float(panel_bounds["bracer_panel_width_mm"]),
                     1.0,
                     key="armor_bracer_panel_width_mm",
-                    help="How much of the exterior front arc the panel occupies.",
+                    help="Width bounds follow the selected Panel Type while preserving closure clearance.",
                 )
                 bracer_metrics["bracer_panel_edge_roundness_mm"] = st.number_input(
                     "Panel edge roundness (mm)",
@@ -388,6 +424,7 @@ else:
                     key="armor_bracer_panel_position_mm",
                     help="Negative moves toward the wrist; positive moves toward the forearm while staying within margins.",
                 )
+            bracer_metrics["bracer_panel_type"] = panel_type
 
         st.subheader("Binding / Closure")
         bracer_binding_style = st.selectbox(
@@ -395,6 +432,42 @@ else:
             BRACER_BINDING_STYLES,
             help="Optional paired holes, true loops, strap slots, or buckle-ready strap hardware passages.",
         )
+        if bracer_binding_style == "Buckle-Ready Slots":
+            buckle_seed = dict(bracer_metrics)
+            for metric_name in (
+                "bracer_buckle_receiver_gap_mm",
+                "bracer_buckle_receiver_projection_mm",
+                "bracer_buckle_receiver_ear_thickness_mm",
+                "bracer_buckle_pin_diameter_mm",
+            ):
+                state_key = f"armor_{metric_name}"
+                if state_key in st.session_state:
+                    buckle_seed[metric_name] = st.session_state[state_key]
+            buckle_bounds, _ = resolve_bracer_metrics(buckle_seed)
+            buckle_specs = {
+                "bracer_buckle_receiver_gap_mm": (8.0, 14.0, "Receiver Gap (mm)", "Clear channel between the two exterior mounting ears."),
+                "bracer_buckle_receiver_projection_mm": (5.0, 8.0, "Receiver Projection (mm)", "Outward height of the exterior mounting ears."),
+                "bracer_buckle_receiver_ear_thickness_mm": (3.0, 5.0, "Ear Thickness (mm)", "Longitudinal thickness of each mounting ear."),
+                "bracer_buckle_pin_diameter_mm": (2.5, 4.0, "Pin Passage Diameter (mm)", "Transverse bar or pin passage through both receiver ears."),
+            }
+            for metric_name, (minimum, maximum, _label, _help) in buckle_specs.items():
+                state_key = f"armor_{metric_name}"
+                if state_key in st.session_state:
+                    st.session_state[state_key] = float(
+                        max(minimum, min(float(st.session_state[state_key]), maximum))
+                    )
+            buckle_cols = st.columns(4)
+            for index, (metric_name, (minimum, maximum, label, help_text)) in enumerate(buckle_specs.items()):
+                with buckle_cols[index]:
+                    bracer_metrics[metric_name] = st.number_input(
+                        label,
+                        minimum,
+                        maximum,
+                        float(buckle_bounds[metric_name]),
+                        0.5,
+                        key=f"armor_{metric_name}",
+                        help=help_text,
+                    )
 
         armor_params, armor_warnings = build_bracer_generation_params(
             armor_type, bracer_style, bracer_metrics, detail_options, bracer_binding_style
@@ -481,8 +554,20 @@ else:
         for message in armor_audit["passes"]:
             st.success(message)
 
-    scad = generate_armor_scad(**armor_params, debug_geometry=debug_geometry)
+    scad = generate_armor_scad(**armor_params, debug_geometry=debug_geometry, render_quality="preview")
     download_name = f"{armor_type.lower()}.scad"
+
+
+def scad_for_render_quality(render_quality: str) -> str:
+    if generation_category == "Armor":
+        return generate_armor_scad(
+            **armor_params,
+            debug_geometry=debug_geometry,
+            render_quality=render_quality,
+        )
+    return scad
+
+
 st.subheader("Generated OpenSCAD")
 st.code(scad, language="openscad")
 st.download_button(
@@ -492,7 +577,7 @@ st.download_button(
 preview_col, stl_col = st.columns(2)
 with preview_col:
     if st.button("Generate OpenSCAD Preview", disabled=not can_export):
-        result = export_with_openscad(scad, openscad_path, "png")
+        result = export_with_openscad(scad_for_render_quality("preview"), openscad_path, "png")
         if result.success and result.path:
             st.success(result.message)
             st.image(str(result.path), caption="OpenSCAD preview")
@@ -500,7 +585,7 @@ with preview_col:
             st.error(result.message)
 with stl_col:
     if st.button("Generate STL", disabled=not can_export):
-        result = export_with_openscad(scad, openscad_path, "stl")
+        result = export_with_openscad(scad_for_render_quality("final"), openscad_path, "stl")
         if result.success and result.path:
             try:
                 stl_data = result.path.read_bytes()
@@ -517,11 +602,44 @@ with stl_col:
         else:
             st.error(result.message)
 
+if generation_category == "Armor" and armor_type == "Bracer":
+    if st.button("Generate Preview Set", disabled=not can_export):
+        preview_set = export_preview_set(scad_for_render_quality("preview_set"), openscad_path)
+        if preview_set.success:
+            st.success(preview_set.message)
+        elif preview_set.successful_paths:
+            st.warning(preview_set.message)
+        else:
+            st.error(preview_set.message)
+
+        successful_paths = preview_set.successful_paths
+        if successful_paths:
+            zip_buffer = BytesIO()
+            with ZipFile(zip_buffer, "w") as zip_file:
+                for view_name, image_path in successful_paths.items():
+                    try:
+                        zip_file.write(image_path, arcname=image_path.name)
+                    except OSError as exc:
+                        st.warning(f"{view_name}: generated image could not be added to ZIP: {exc}")
+            st.download_button(
+                "Download bracer preview set ZIP",
+                data=zip_buffer.getvalue(),
+                file_name="bracer_preview_set.zip",
+                mime="application/zip",
+            )
+            cols = st.columns(3)
+            for index, (view_name, image_path) in enumerate(successful_paths.items()):
+                with cols[index % 3]:
+                    st.image(str(image_path), caption=view_name.replace("_", " ").title())
+
+        for view_name, result in preview_set.failures.items():
+            st.error(f"{view_name}: {result.message}")
+
 with st.expander("Known limitations"):
     st.markdown(
         """
 - PNG and STL generation require a local OpenSCAD installation.
-- Command-line previews use OpenSCAD's default camera.
+- Single command-line previews use OpenSCAD's default camera; Bracer preview sets use named camera presets.
 - Geometry is simplified, decorative, and not intended for fabrication decisions.
 - Debug markers are included in exported geometry only while Debug geometry is enabled.
 """

@@ -5,6 +5,8 @@ from math import isfinite
 from scad_generator import (
     ARMOR_TYPES,
     BLADE_STYLES,
+    BRACER_PANEL_ANGLE_SEGMENTS,
+    BRACER_PANEL_LENGTH_SEGMENTS,
     BRACER_DETAIL_OPTIONS,
     BRACER_STYLES,
     GUARD_STYLES,
@@ -19,6 +21,7 @@ from scad_generator import (
     normalize_armor_type,
     normalize_bracer_binding_style,
     normalize_bracer_detail_options,
+    normalize_bracer_panel_type,
     normalize_bracer_style,
     normalize_component_visibility,
     normalize_pauldron_detail_options,
@@ -155,20 +158,42 @@ def audit_bracer_geometry(
         panel_wrist_margin = resolved["bracer_panel_wrist_margin_mm"]
         panel_forearm_margin = resolved["bracer_panel_forearm_margin_mm"]
         safe_front_width = resolved["bracer_panel_safe_front_width_mm"]
+        panel_type = resolved["bracer_panel_type"]
+        panel_min_width = resolved["bracer_panel_min_width_mm"]
+        panel_max_width = resolved["bracer_panel_max_width_mm"]
+        panel_min_height = resolved["bracer_panel_min_height_mm"]
+        panel_max_height = resolved["bracer_panel_max_height_mm"]
         min_panel_dimension = min(panel_length, panel_width)
+        requested_width = _number(metrics, "bracer_panel_width_mm")
         requested_height = _number(metrics, "bracer_panel_height_mm")
         requested_roundness = _number(metrics, "bracer_panel_edge_roundness_mm")
         requested_position = _number(metrics, "bracer_panel_position_mm")
+        requested_panel_type = metrics.get("bracer_panel_type")
 
-        if panel_height > thickness * 0.6:
-            warnings.append("Raised Design Panel height is tall relative to wall thickness; reduce panel height to avoid fragile sanding stock.")
-        elif panel_height < 0.8:
-            warnings.append("Raised Design Panel height is low and may not provide meaningful carving or sanding depth.")
+        if requested_panel_type not in (None, "") and normalize_bracer_panel_type(requested_panel_type) != str(requested_panel_type).strip().title():
+            warnings.append("Unsupported Panel Type was normalized to Wide Panel; adjust Panel Type if a Narrow Panel was intended.")
+
+        if requested_width and requested_width != panel_width:
+            direction = "below" if requested_width < panel_width else "above"
+            warnings.append(
+                f"{panel_type} width was clamped {direction} its {panel_min_width:g}-{panel_max_width:g} mm range; "
+                "adjust Panel Type or Panel Width."
+            )
+
+        if panel_height >= panel_max_height * 0.9:
+            warnings.append("Raised Design Panel height is unusually tall; reduce Panel Height if the raised stock looks fragile.")
+        elif panel_height > max(panel_min_height * 1.65, thickness * 0.72):
+            info.append("Raised Design Panel height is substantial but within the normalized exterior stock limit.")
+        elif panel_height < panel_min_height:
+            warnings.append("Raised Design Panel height is below the meaningful minimum; generation raises Panel Height.")
         else:
-            passed.append("Raised Design Panel height is shallow but usable for light maker finishing.")
+            passed.append("Raised Design Panel height is in the normal maker-finishing range.")
 
         if requested_height and requested_height != panel_height:
-            warnings.append("Raised Design Panel height was clamped to avoid excessive protrusion from the shell.")
+            warnings.append(
+                f"Raised Design Panel height was clamped to {panel_height:g} mm; adjust Panel Height within "
+                f"{panel_min_height:g}-{panel_max_height:g} mm."
+            )
 
         opening_margin = max(10.0, trim_width * 1.15)
         if panel_wrist_margin < opening_margin:
@@ -178,20 +203,25 @@ def audit_bracer_geometry(
         if panel_wrist_margin >= opening_margin and panel_forearm_margin >= opening_margin:
             passed.append("Raised Design Panel stays within usable length margins.")
 
-        if panel_width > safe_front_width * 0.9:
-            warnings.append("Raised Design Panel width approaches the opening or closure region; reduce panel width for safer clearance.")
+        if panel_width > safe_front_width * 0.92:
+            warnings.append(f"{panel_type} is approaching closure clearance; reduce Panel Width before moving closure geometry.")
         else:
-            passed.append("Raised Design Panel width stays in the exterior front region.")
+            passed.append(f"{panel_type} width stays in the safe exterior front region.")
 
         if panel_roundness > min_panel_dimension * 0.24 or requested_roundness > panel_roundness:
             warnings.append("Raised Design Panel edge roundness is near the panel limit; reduce edge roundness or increase panel size.")
         else:
             passed.append("Raised Design Panel edge roundness is supported by the panel dimensions.")
 
-        if panel_length < 24.0 or panel_width < 16.0 or panel_height < 0.8:
+        if panel_length < 24.0 or panel_width < 24.0 or panel_height < panel_min_height:
             warnings.append("Raised Design Panel dimensions may create weak or poorly printable geometry.")
         else:
             passed.append("Raised Design Panel dimensions are printable at the normalized values.")
+
+        info.append(
+            "Raised Design Panel preview complexity is capped at "
+            f"{BRACER_PANEL_ANGLE_SEGMENTS} angular by {BRACER_PANEL_LENGTH_SEGMENTS} length segments."
+        )
 
         if binding in {"Lacing Holes", "Lacing Loops", "Strap Slots", "Buckle-Ready Slots"}:
             closure_clearance = max(4.0, resolved["bracer_closure_flange_width_mm"] * 0.25)
@@ -215,23 +245,48 @@ def audit_bracer_geometry(
         hole_diameter = resolved["bracer_binding_hole_diameter_mm"]
         slot_length = resolved["bracer_strap_slot_length_mm"]
         slot_width = resolved["bracer_strap_slot_width_mm"]
+        slot_depth = resolved.get("bracer_slot_cutter_depth_mm")
         edge_margin = resolved["bracer_closure_edge_margin_mm"]
+        hole_edge_margin = resolved["bracer_lacing_edge_margin_mm"]
+        strap_edge_margin = resolved["bracer_strap_slot_edge_margin_mm"]
+        buckle_edge_margin = resolved["bracer_buckle_slot_edge_margin_mm"]
         flange_width = resolved["bracer_closure_flange_width_mm"]
         flange_thickness = resolved["bracer_closure_flange_thickness_mm"]
         hole_flange_margin = (flange_width - hole_diameter) / 2
         slot_flange_margin = (flange_width - slot_length) / 2
+        buckle_flange_margin = (flange_width - resolved["bracer_buckle_slot_length_mm"]) / 2
         if hole_diameter > thickness * 1.8:
             warnings.append("Binding holes are large relative to wall thickness.")
         elif binding in {"Lacing Holes", "Lacing Loops"}:
             passed.append("Lacing features use paired, printable spacing.")
-        if binding in {"Lacing Holes", "Lacing Loops"} and hole_flange_margin < edge_margin:
+        if binding in {"Lacing Holes", "Lacing Loops"} and hole_flange_margin < hole_edge_margin:
             warnings.append("Lacing hole lacks complete material margin in the exterior closure flange.")
         elif binding in {"Lacing Holes", "Lacing Loops"}:
             passed.append("Lacing holes remain complete enclosed passages through exterior flanges.")
-        if binding in {"Strap Slots", "Buckle-Ready Slots"} and slot_flange_margin < edge_margin:
-            warnings.append("Strap slot lacks complete material margin in the exterior closure flange.")
-        elif binding in {"Strap Slots", "Buckle-Ready Slots"}:
-            passed.append("Strap slots remain complete enclosed passages through exterior flanges.")
+        if binding == "Strap Slots" and slot_flange_margin < strap_edge_margin:
+            warnings.append("Strap Slots are too close to the closure edge; reduce strap slot length or increase bracer size.")
+        elif binding == "Strap Slots":
+            passed.append("Strap Slots keep enlarged material margins and remain complete enclosed passages.")
+        if binding == "Buckle-Ready Slots" and buckle_flange_margin < buckle_edge_margin:
+            warnings.append("Buckle-Ready Slots are too close to the closure edge; reduce hardware slot size or increase bracer size.")
+        elif binding == "Buckle-Ready Slots":
+            passed.append("Buckle receiver strap passage keeps enlarged material margins and remains a complete opening.")
+        if binding in {"Strap Slots", "Buckle-Ready Slots"}:
+            frame_depth = flange_thickness
+            if binding == "Buckle-Ready Slots":
+                frame_depth += thickness * 0.55
+            if slot_depth and slot_depth > frame_depth + resolved["bracer_closure_slot_inset_mm"] * 2:
+                passed.append("Closure slot cutters over-travel through the flange/frame so no exterior membrane remains.")
+            else:
+                warnings.append("Closure slot cutter depth is too short for the selected flange or frame thickness.")
+            target_spacing = max(32.0, min(44.0, length * 0.16))
+            if resolved["bracer_hardware_slot_spacing_mm"] < target_spacing:
+                warnings.append(
+                    "Closure slot group spacing was compressed to keep all three slots inside the usable closure region; "
+                    "increase bracer length or reduce slot dimensions."
+                )
+            else:
+                passed.append("Three-slot closure group is centered and evenly spaced inside the usable closure region.")
         if flange_thickness < max(thickness * 1.25, hole_diameter):
             warnings.append("Closure flange is too thin for robust exterior passages.")
         else:
@@ -245,9 +300,34 @@ def audit_bracer_geometry(
                 passed.append("Lacing loops include printable wall thickness around an enclosed passage.")
         if binding == "Buckle-Ready Slots":
             if resolved["bracer_buckle_slot_width_mm"] <= slot_width:
-                warnings.append("Buckle-access opening is too small for the selected strap width.")
+                warnings.append("Buckle receiver strap passage is too small for the selected strap width.")
             else:
-                passed.append("Buckle-ready access slots are larger than the strap-anchor slots.")
+                passed.append("Buckle receiver strap passage is larger than the strap-anchor slots.")
+            receiver_gap = resolved["bracer_buckle_receiver_gap_mm"]
+            receiver_projection = resolved["bracer_buckle_receiver_projection_mm"]
+            ear_thickness = resolved["bracer_buckle_receiver_ear_thickness_mm"]
+            pin_diameter = resolved["bracer_buckle_pin_diameter_mm"]
+            pin_wall = resolved["bracer_buckle_pin_wall_margin_mm"]
+            if receiver_gap < 8.0:
+                warnings.append("Buckle receiver central gap is narrow; increase Receiver Gap for insert clearance.")
+            else:
+                passed.append("Buckle receiver leaves a visible central gap between the two exterior ears.")
+            if ear_thickness < max(3.0, pin_diameter * 0.9):
+                warnings.append("Buckle receiver ears are too thin for the selected pin passage.")
+            else:
+                passed.append("Buckle receiver ears have printable thickness around the pin passage.")
+            if receiver_projection - pin_diameter < pin_wall * 2:
+                warnings.append("Buckle receiver pin passage lacks the requested material above and below the hole.")
+            else:
+                passed.append("Buckle receiver pin passage keeps material around the transverse hole.")
+            if receiver_projection > 8.0:
+                warnings.append("Buckle receiver projection is large for the decorative bracer scale.")
+            else:
+                passed.append("Buckle receiver projection stays low-profile on the exterior side.")
+            if resolved["bracer_buckle_receiver_total_length_mm"] > resolved["bracer_hardware_slot_spacing_mm"] * 0.8:
+                warnings.append("Buckle receiver ears are close to neighboring receiver positions; reduce gap or ear thickness.")
+            else:
+                passed.append("Buckle receiver ears fit inside the available closure-side spacing.")
     else:
         passed.append("No closure hardware selected.")
 
