@@ -55,6 +55,13 @@ BRACER_CAMERA_PRESETS = {
     "rear_three_quarter": "-106,98,-42,116,0,148,580",
 }
 
+SCABBARD_CAMERA_PRESETS = {
+    "three_quarter": "90,360,90,62,0,28,1040",
+    "side_profile": "0,360,32,70,0,0,1020",
+    "opening_view": "0,20,38,74,0,0,260",
+    "top_profile": "0,360,250,45,0,0,1080",
+}
+
 
 def build_openscad_command(
     executable: str,
@@ -68,6 +75,17 @@ def build_openscad_command(
         command.extend(["--camera", camera])
     command.append(str(scad_path))
     return command
+
+
+def resolve_openscad_executable(executable: str) -> str:
+    """Prefer the Windows CLI companion when a configured openscad.exe path is supplied."""
+    value = (executable or "openscad").strip()
+    path = Path(value).expanduser()
+    if path.suffix.lower() == ".exe":
+        cli_companion = path.with_suffix(".com")
+        if cli_companion.exists() and cli_companion.is_file():
+            return str(cli_companion)
+    return value
 
 
 def _error(message: str, code: str) -> ExportResult:
@@ -145,7 +163,7 @@ def export_with_openscad(
     if output_format not in {"png", "stl"}:
         return _error("Output format must be 'png' or 'stl'.", "invalid_format")
 
-    executable = (executable or "openscad").strip()
+    executable = resolve_openscad_executable(executable)
     input_error = _validate_export_inputs(scad, executable, timeout)
     if input_error:
         return input_error
@@ -169,9 +187,10 @@ def export_preview_set(
     executable: str = "openscad",
     timeout: int = DEFAULT_OPENSCAD_TIMEOUT_SECONDS,
     presets: dict[str, str] | None = None,
+    label: str = "bracer",
 ) -> PreviewSetResult:
     """Export deterministic named PNG views while preserving partial successes."""
-    executable = (executable or "openscad").strip()
+    executable = resolve_openscad_executable(executable)
     input_error = _validate_export_inputs(scad, executable, timeout)
     camera_presets = presets or BRACER_CAMERA_PRESETS
     if input_error:
@@ -180,7 +199,8 @@ def export_preview_set(
 
     try:
         GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-        scad_path = GENERATED_DIR / "bracer_preview_set.scad"
+        safe_label = "".join(ch for ch in label.lower() if ch.isalnum() or ch in {"_", "-"}) or "preview"
+        scad_path = GENERATED_DIR / f"{safe_label}_preview_set.scad"
         scad_path.write_text(scad, encoding="utf-8")
     except (OSError, PermissionError) as exc:
         error = _error(f"Could not write preview files: {exc}", "write_error")
@@ -188,7 +208,7 @@ def export_preview_set(
 
     results: dict[str, ExportResult] = {}
     for name, camera in camera_presets.items():
-        output_path = GENERATED_DIR / f"bracer_{name}.png"
+        output_path = GENERATED_DIR / f"{safe_label}_{name}.png"
         try:
             if output_path.exists():
                 output_path.unlink()
@@ -202,7 +222,7 @@ def export_preview_set(
     failed = len(results) - successful
     success = successful > 0 and failed == 0
     if failed:
-        message = f"Generated {successful} of {len(results)} bracer preview views; {failed} failed."
+        message = f"Generated {successful} of {len(results)} {safe_label} preview views; {failed} failed."
     else:
-        message = f"Generated {successful} bracer preview views."
+        message = f"Generated {successful} {safe_label} preview views."
     return PreviewSetResult(success, message, results)

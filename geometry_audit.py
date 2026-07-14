@@ -1,6 +1,7 @@
 """Advisory checks for generated decorative sword assembly geometry."""
 
-from math import isfinite
+from math import cos, isfinite, radians, sin
+from pathlib import Path
 
 from scad_generator import (
     ARMOR_TYPES,
@@ -34,8 +35,10 @@ from scad_generator import (
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from scabbard_generator import (
     MAX_SCABBARD_CLEARANCE_MM,
+    MAX_CUSTOM_STL_UPLOAD_BYTES,
     MIN_SCABBARD_CLEARANCE_MM,
     MIN_SCABBARD_WALL_THICKNESS_MM,
+    normalize_custom_stl_scabbard_parameters,
     normalize_scabbard_parameters,
     validate_scabbard_fit,
 )
@@ -69,6 +72,19 @@ def _number(metrics: dict[str, float], name: str) -> float:
     return number if isfinite(number) else 0.0
 
 
+def _rotated_blade_axis_y_component(rx_deg: float, ry_deg: float, rz_deg: float) -> float:
+    """Return the Y component of a +Y blade axis after OpenSCAD-style X/Y/Z rotations."""
+    x, y, z = 0.0, 1.0, 0.0
+    rx, ry, rz = radians(rx_deg), radians(ry_deg), radians(rz_deg)
+    cy, sy = cos(rx), sin(rx)
+    y, z = y * cy - z * sy, y * sy + z * cy
+    cx, sx = cos(ry), sin(ry)
+    x, z = x * cx + z * sx, -x * sx + z * cx
+    cz, sz = cos(rz), sin(rz)
+    _x, y = x * cz - y * sz, x * sz + y * cz
+    return y
+
+
 def audit_scabbard_geometry(
     metrics: dict[str, float],
     blade_type: str = "tapered",
@@ -77,10 +93,12 @@ def audit_scabbard_geometry(
     split_mode: str = "Single Piece",
     throat_enabled: bool = True,
     end_cap_enabled: bool = True,
+    fit_mode: str = "Fitted Scabbard",
+    seam_allowance_mm: float = 0.25,
 ) -> dict[str, list[str]]:
     """Return scabbard-specific geometry checks and clamp messages."""
     warnings: list[str] = []
-    info: list[str] = ["Scabbard mode: digital prototype geometry for straight supported blades only."]
+    info: list[str] = ["Scabbard mode: digital prototype geometry derived from the selected blade profile."]
     passed: list[str] = []
 
     try:
@@ -92,6 +110,8 @@ def audit_scabbard_geometry(
             split_mode,
             throat_enabled,
             end_cap_enabled,
+            fit_mode,
+            seam_allowance_mm,
         )
     except ValueError as exc:
         return {"warnings": [str(exc)], "info": info, "passes": passed}
@@ -121,6 +141,85 @@ def audit_scabbard_geometry(
     passed.extend(fit["passes"])
     if params.blade_profile.ricasso_length_mm < params.blade_profile.length_mm:
         passed.append("Inherited sword blade dimensions are internally consistent with scabbard length.")
+    return {"warnings": warnings, "info": info, "passes": passed}
+
+
+def audit_custom_stl_scabbard_geometry(
+    stl_path: str,
+    object_type: str = "Blade only",
+    rotate_x_deg: float = 0.0,
+    rotate_y_deg: float = 0.0,
+    rotate_z_deg: float = 0.0,
+    scale: float = 1.0,
+    clearance_mm: float = 0.6,
+    wall_thickness_mm: float = 3.2,
+    throat_length_mm: float = 18.0,
+    split_mode: str = "Single Piece",
+    seam_allowance_mm: float = 0.25,
+) -> dict[str, list[str]]:
+    """Return safety and limitation checks for the experimental STL scabbard workflow."""
+    params, warnings = normalize_custom_stl_scabbard_parameters(
+        stl_path,
+        object_type,
+        rotate_x_deg,
+        rotate_y_deg,
+        rotate_z_deg,
+        scale,
+        clearance_mm,
+        wall_thickness_mm,
+        throat_length_mm,
+        split_mode,
+        seam_allowance_mm,
+    )
+    info = [
+        "Experimental STL scabbards require blade-only, watertight, manifold meshes aligned to the project axis.",
+        "OpenSCAD mesh clearance uses minkowski() around the imported STL, which can be slow on detailed meshes.",
+        f"Upload size limit is {MAX_CUSTOM_STL_UPLOAD_BYTES // (1024 * 1024)} MB.",
+    ]
+    passed: list[str] = []
+    if params is None:
+        return {"warnings": warnings, "info": info, "passes": passed}
+    inner_radius = params.clearance_mm
+    outer_radius = params.clearance_mm + params.wall_thickness_mm
+    if not warnings:
+        passed.append("Uploaded STL path is inside the controlled generated/uploaded_stl directory.")
+    if params.object_type == "Blade only":
+        passed.append("Blade-only STL mode avoids wrapping guard, grip, and pommel geometry.")
+    else:
+        warnings.append("Full-sword STL detected or strongly suspected; use a blade-only STL for cavity generation.")
+    if params.wall_thickness_mm >= MIN_SCABBARD_WALL_THICKNESS_MM:
+        passed.append("STL shell wall thickness is within the scabbard safety range.")
+    else:
+        warnings.append(f"STL shell wall is below the configured {MIN_SCABBARD_WALL_THICKNESS_MM:g} mm minimum.")
+    if outer_radius <= inner_radius:
+        warnings.append("STL final output has no valid cavity wall because outer expansion is not greater than inner expansion.")
+    else:
+        passed.append("STL outer expansion radius is greater than the inner cavity expansion radius.")
+        passed.append("STL final shell is generated as outer expanded blade minus inner expanded blade.")
+    if params.throat_length_mm <= 0:
+        warnings.append("STL throat cut does not intersect the shell because throat opening length is zero.")
+    else:
+        passed.append("STL throat cut removes the blade-entry cap while leaving the expected +Y tip end closed.")
+    axis_y = _rotated_blade_axis_y_component(params.rotate_x_deg, params.rotate_y_deg, params.rotate_z_deg)
+    if axis_y < -0.35:
+        warnings.append("Uploaded mesh orientation is likely reversed; the throat cut may be at the tip end instead of the blade base.")
+    elif abs(axis_y) <= 0.35:
+        warnings.append("STL rotations make the blade-entry throat end ambiguous; verify the blade base remains on the expected -Y/+Y entry side.")
+    else:
+        passed.append("STL rotation keeps the imported blade axis broadly aligned with the expected +Y throat-to-tip direction.")
+    if params.scale < 0.2 or params.scale > 5.0:
+        warnings.append("Scaled STL dimensions may be far outside normal prop ranges; verify orientation and units.")
+    if abs(params.rotate_x_deg) > 360 or abs(params.rotate_y_deg) > 360 or abs(params.rotate_z_deg) > 360:
+        warnings.append("STL rotation values are large; verify the imported blade is oriented along the expected axis.")
+    path = Path(stl_path)
+    lowered_name = path.name.lower()
+    if any(token in lowered_name for token in ("sword", "hilt", "guard", "grip", "pommel", "handle")):
+        warnings.append("Full-sword STL detected or strongly suspected from the filename; upload blade-only geometry.")
+    try:
+        if path.exists() and path.stat().st_size > MAX_CUSTOM_STL_UPLOAD_BYTES * 0.75:
+            warnings.append("Minkowski result is likely impractical due to excessive mesh complexity or file size.")
+    except OSError:
+        warnings.append("Uploaded STL could not be inspected for mesh-complexity warnings.")
     return {"warnings": warnings, "info": info, "passes": passed}
 
 

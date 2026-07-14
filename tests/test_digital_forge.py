@@ -8,9 +8,11 @@ from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron
 from preview_service import (
     BRACER_CAMERA_PRESETS,
     DEFAULT_OPENSCAD_TIMEOUT_SECONDS,
+    SCABBARD_CAMERA_PRESETS,
     build_openscad_command,
     export_preview_set,
     export_with_openscad,
+    resolve_openscad_executable,
 )
 from realism_rules import check_realism
 from scad_generator import (
@@ -1667,6 +1669,18 @@ def test_preview_rejects_empty_scad_and_invalid_executable_path():
     assert invalid_path.error_code == "invalid_executable"
 
 
+def test_openscad_resolver_prefers_windows_cli_companion():
+    test_dir = Path("generated/test_openscad_resolver")
+    test_dir.mkdir(parents=True, exist_ok=True)
+    exe_path = test_dir / "openscad.exe"
+    com_path = test_dir / "openscad.com"
+    exe_path.write_text("gui", encoding="utf-8")
+    com_path.write_text("cli", encoding="utf-8")
+
+    assert resolve_openscad_executable(str(exe_path)) == str(com_path)
+    assert resolve_openscad_executable("openscad") == "openscad"
+
+
 def test_bracer_camera_presets_are_complete_and_deterministic():
     assert tuple(BRACER_CAMERA_PRESETS) == (
         "front_exterior",
@@ -1680,6 +1694,18 @@ def test_bracer_camera_presets_are_complete_and_deterministic():
     assert BRACER_CAMERA_PRESETS["front_exterior"] == "0,120,42,68,0,0,520"
     assert BRACER_CAMERA_PRESETS["closure_side"] == "70,118,12,92,0,148,260"
     assert BRACER_CAMERA_PRESETS["closure_side"] != "-150,118,38,70,0,92,540"
+
+
+def test_scabbard_camera_presets_are_complete_and_deterministic():
+    assert tuple(SCABBARD_CAMERA_PRESETS) == (
+        "three_quarter",
+        "side_profile",
+        "opening_view",
+        "top_profile",
+    )
+    assert all(isinstance(value, str) and value.count(",") == 6 for value in SCABBARD_CAMERA_PRESETS.values())
+    assert SCABBARD_CAMERA_PRESETS["three_quarter"] == "90,360,90,62,0,28,1040"
+    assert SCABBARD_CAMERA_PRESETS["opening_view"] == "0,20,38,74,0,0,260"
 
 
 def test_export_preview_set_builds_named_camera_exports():
@@ -1705,6 +1731,27 @@ def test_export_preview_set_builds_named_camera_exports():
     assert all("--camera" in command for command in calls)
     assert [command[command.index("--camera") + 1] for command in calls] == list(BRACER_CAMERA_PRESETS.values())
     assert [Path(command[command.index("-o") + 1]).stem.removeprefix("bracer_") for command in calls] == list(BRACER_CAMERA_PRESETS)
+
+
+def test_export_preview_set_supports_scabbard_label_and_presets():
+    calls = []
+    output_dir = Path("generated/test_scabbard_preview_set_success")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        output_path = Path(command[command.index("-o") + 1])
+        output_path.write_bytes(b"png")
+        return CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    with patch("preview_service.GENERATED_DIR", output_dir), patch("preview_service.subprocess.run", side_effect=fake_run):
+        result = export_preview_set("cube(1);", "openscad", presets=SCABBARD_CAMERA_PRESETS, label="scabbard")
+
+    assert result.success
+    assert [Path(command[command.index("-o") + 1]).name for command in calls] == [
+        f"scabbard_{name}.png" for name in SCABBARD_CAMERA_PRESETS
+    ]
+    assert [command[command.index("--camera") + 1] for command in calls] == list(SCABBARD_CAMERA_PRESETS.values())
 
 
 def test_export_preview_set_preserves_successes_when_one_view_fails():

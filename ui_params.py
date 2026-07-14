@@ -16,6 +16,7 @@ from scad_generator import (
 )
 from scabbard_generator import (
     DEFAULT_SCABBARD_CLEARANCE_MM,
+    DEFAULT_SCABBARD_SEAM_ALLOWANCE_MM,
     DEFAULT_SCABBARD_WALL_THICKNESS_MM,
     normalize_scabbard_parameters,
 )
@@ -80,6 +81,8 @@ def build_scabbard_generation_params(
     split_mode: str = "Single Piece",
     throat_enabled: bool = True,
     end_cap_enabled: bool = True,
+    fit_mode: str = "Fitted Scabbard",
+    seam_allowance_mm: float = DEFAULT_SCABBARD_SEAM_ALLOWANCE_MM,
 ) -> tuple[dict[str, object], list[str]]:
     """Return normalized scabbard generation kwargs and non-fatal clamp warnings."""
     params, warnings = normalize_scabbard_parameters(
@@ -90,6 +93,8 @@ def build_scabbard_generation_params(
         split_mode,
         throat_enabled,
         end_cap_enabled,
+        fit_mode,
+        seam_allowance_mm,
     )
     profile = params.blade_profile
     return {
@@ -106,6 +111,8 @@ def build_scabbard_generation_params(
         "split_mode": params.split_mode,
         "throat_enabled": params.throat_enabled,
         "end_cap_enabled": params.end_cap_enabled,
+        "fit_mode": params.fit_mode,
+        "seam_allowance_mm": params.seam_allowance_mm,
     }, warnings
 
 

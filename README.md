@@ -64,17 +64,19 @@ Version 4 focuses on geometry stabilization, visual debugging, and safer optiona
 The main Streamlit app now has a top-level **Generation category** selector:
 
 - **Sword** remains the default and preserves the existing sword controls, audit, preview, SCAD download, and STL export flow.
-- **Scabbard** creates a straight-blade scabbard from inherited sword blade dimensions.
+- **Scabbard** creates a blade-derived scabbard from inherited sword blade dimensions, plus an experimental blade-only STL import workflow.
 - **Armor** shows armor-specific controls and currently supports **Bracer** and **Pauldron**.
 
 ## Scabbard Mode
 
-Scabbard mode is the Week 2 parametric scabbard core. It supports:
+Scabbard mode is a blade-envelope-driven parametric scabbard core. It supports:
 
 - **Symmetrical Tapered** blades
 - **Leaf** blades
+- **Curved** blades
+- **Falchion** blades
 
-Unsupported blade families, including **Falchion** and **Curved**, fail with a clear validation message rather than generating a mismatched scabbard. The first scabbard implementation is straight-axis only and does not include curved sweep logic.
+The UI does not expose separate presets such as "Leaf Scabbard" or "Falchion Scabbard." The selected blade geometry drives the scabbard cavity and, by default, the exterior shell. Decorative and construction settings remain separate from blade compatibility.
 
 The scabbard inherits blade dimensions from the corresponding sword configuration:
 
@@ -86,6 +88,17 @@ The scabbard inherits blade dimensions from the corresponding sword configuratio
 - Ricasso length
 - Prop-safe tip width and blade thickness clamps used by sword generation
 
+Two exterior modes are available:
+
+- **Fitted Scabbard** follows the selected blade profile, including leaf belly, falchion asymmetry, curved centerline offset, and tip location.
+- **Straight Exterior** simplifies the outside silhouette while preserving a fitted internal cavity based on the actual blade envelope.
+
+Leaf scabbards use the same leaf profile points as the blade. The cavity and shell widen through the leaf belly and narrow only after the blade profile narrows toward the tip, avoiding the old artificial inward taper.
+
+Falchion scabbards sample the forward-heavy blade profile, including the widened belly and asymmetric edge corridor. The throat opening is sized against the sampled full blade envelope so the broadest section has insertion clearance.
+
+Curved scabbards sample the curved blade profile and preserve centerline offsets in the cavity and fitted shell. This is a deterministic 2D envelope extrusion, not a physically perfect swept solid; high curvature still needs visual inspection and print testing.
+
 Clearance is defined as **per-side clearance** in millimetres. It is added around blade width and blade thickness, so the full internal cavity grows by twice the configured clearance across each axis. The default is intended for digital fit testing and early printable prototypes, but printer-specific tolerance calibration is still required.
 
 Wall thickness is the minimum material between the internal blade cavity and the exterior shell on both side walls and face walls. Values below the safe minimum are clamped and reported in the geometry audit.
@@ -93,19 +106,37 @@ Wall thickness is the minimum material between the internal blade cavity and the
 Split mode supports:
 
 - **Single Piece**, which emits one complete scabbard shell.
-- **Two Piece**, which emits named `scabbard_left_half()` and `scabbard_right_half()` modules split along the longitudinal center plane. The preview shows the halves separated for printing; removing the top-level translations digitally reassembles them without overlap.
+- **Left/Right Halves**, which emits named `scabbard_left_half()` and `scabbard_right_half()` modules split along the longitudinal center plane. The preview shows the halves separated for printing.
+- **Front/Back Halves**, which emits `scabbard_part_a()` and `scabbard_part_b()` split through the thickness axis.
+
+Both split modes apply a small configurable seam allowance to avoid zero-thickness coplanar cuts. The STL export still produces the current top-level preview assembly; the named modules can be isolated in OpenSCAD for separate part export.
 
 The basic throat is an optional reinforced collar at the blade-entry opening. It leaves the insertion path open and uses the same cavity subtraction as the body. The basic end cap closes the outside past the blade tip while preserving the configured tip-clearance zone inside the cavity.
 
-Scabbard output uses the same generated SCAD display, `.scad` download, PNG preview, and STL export buttons as Sword mode. OpenSCAD is optional for SCAD download and required only for PNG/STL export.
+Scabbard output uses the same generated SCAD display, `.scad` download, PNG preview, and STL export buttons as Sword mode. It also supports a scabbard preview set with deterministic three-quarter, side/profile, opening, and top/profile camera angles when OpenSCAD is configured. OpenSCAD is optional for SCAD download and required only for PNG/STL export.
+
+### STL-Derived Scabbards
+
+The **Experimental STL-derived scabbard** mode is a first-pass blade-only workflow:
+
+1. Upload a `.stl` file.
+2. The app validates the extension and size, sanitizes the filename, and copies it into `generated/uploaded_stl/`.
+3. Generated SCAD imports only that controlled local file path.
+4. The imported mesh is rotated/scaled by user controls.
+5. OpenSCAD `minkowski()` creates a cavity clearance volume and a larger shell volume.
+6. The cavity volume is subtracted from the shell.
+
+This workflow intentionally supports **Blade only** STL files. Full sword STL files are not wrapped because guard, grip, and pommel geometry would produce an invalid scabbard. Best results require a watertight, manifold blade mesh oriented to the Digital Forge blade axis. OpenSCAD does not provide a robust general mesh offset, so this is not production-perfect support for arbitrary broken or highly detailed meshes. Large or complex meshes may preview slowly.
 
 Automated completion-gate tests use deterministic profile-level checks instead of full solid collision testing. At sampled blade positions, tests verify:
 
 - Cavity half-width is at least blade half-width plus per-side clearance.
 - Cavity half-thickness is at least blade half-thickness plus per-side clearance.
 - Exterior side and face walls remain at or above the safe minimum wall thickness.
-- The throat entry remains open.
+- The throat entry remains open and large enough for the widest sampled insertion envelope.
 - The end cap starts beyond the required tip-clearance zone.
+- Leaf, falchion, and curved fitted scabbards use style-aware blade profile logic.
+- STL upload paths are sanitized and constrained to the controlled generated directory.
 
 This proves digital clearance at the sampled profile level. It does not guarantee physical fit after printing, because material, slicer settings, support cleanup, sanding, shrinkage, and printer calibration still affect real-world tolerances.
 
@@ -224,14 +255,16 @@ Export failures are reported in the app without stopping SCAD generation or down
 
 The generated models use intentionally simplified, decorative geometry. They are not exact engineering, weapon-manufacturing, or protective-equipment plans and are not suitable for fabrication decisions. The app does not model accurate edge bevels, distal taper, complex guard construction, body fit, articulation, material properties, mass, balance, structural loads, impact resistance, or fabrication-grade validation.
 
-- OpenSCAD PNG previews use its default command-line camera.
+- Single OpenSCAD PNG previews use the default command-line camera; bracer and scabbard preview sets use named camera presets.
 - No interactive STL viewer is bundled.
 - Debug bounds are visual diagnostics, not collision or manufacturability analysis.
 - Sword and guard variants remain intentionally limited while the shared geometry contract stabilizes.
 - Armor mode currently supports Bracer and Pauldron as the first armor modules.
-- Scabbard mode currently supports only Symmetrical Tapered and Leaf straight blades.
+- Scabbard mode supports Symmetrical Tapered, Leaf, Curved, and Falchion blade-derived envelopes.
 - Scabbard fit validation is deterministic profile-level digital validation, not physical print validation.
-- Scabbard mode does not include suspension rings, belt loops, frog attachments, ornate chapes, decorative throat fittings, magnets, snap-fit locks, retention clips, drainage holes, or alignment pins.
+- STL-derived scabbards are experimental and limited to blade-only STL files copied into the controlled generated upload directory.
+- STL-derived scabbards depend on mesh quality, orientation, units, and OpenSCAD `minkowski()` performance.
+- Scabbard mode does not include suspension rings, belt loops, frog attachments, ornate chapes, decorative throat fittings, magnets, snap-fit locks, retention clips, drainage holes, or registration pins.
 - Bracer Version 1 does not include coded motifs, runes, spikes, rivets, or themed decoration presets.
 - Wide and Narrow Raised Design Panels are maker-finished stock only; sanding behavior, attached decorative pieces, fit, supports, print orientation, and material-specific durability still require physical inspection.
 - Preview quality and export behavior depend on the local OpenSCAD installation.

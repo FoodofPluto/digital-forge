@@ -8,8 +8,14 @@ import streamlit as st
 
 from app_config import load_config, save_openscad_path
 from design_notes import get_design_notes
-from geometry_audit import audit_bracer_geometry, audit_geometry, audit_pauldron_geometry, audit_scabbard_geometry
-from preview_service import export_preview_set, export_with_openscad
+from geometry_audit import (
+    audit_bracer_geometry,
+    audit_custom_stl_scabbard_geometry,
+    audit_geometry,
+    audit_pauldron_geometry,
+    audit_scabbard_geometry,
+)
+from preview_service import SCABBARD_CAMERA_PRESETS, export_preview_set, export_with_openscad
 from realism_rules import check_realism
 from scad_generator import (
     ARMOR_TYPES,
@@ -30,14 +36,21 @@ from scad_generator import (
     resolve_bracer_metrics,
 )
 from scabbard_generator import (
+    CUSTOM_STL_PREVIEW_MODES,
     DEFAULT_SCABBARD_CLEARANCE_MM,
+    DEFAULT_SCABBARD_SEAM_ALLOWANCE_MM,
     DEFAULT_SCABBARD_WALL_THICKNESS_MM,
+    DEFAULT_THROAT_LENGTH_MM,
+    MAX_CUSTOM_STL_UPLOAD_BYTES,
     MAX_SCABBARD_CLEARANCE_MM,
     MAX_SCABBARD_WALL_THICKNESS_MM,
     MIN_SCABBARD_CLEARANCE_MM,
     MIN_SCABBARD_WALL_THICKNESS_MM,
+    SCABBARD_FIT_MODES,
     SCABBARD_SPLIT_MODES,
+    generate_custom_stl_scabbard_scad,
     generate_scabbard_scad,
+    save_uploaded_stl,
 )
 from sword_presets import REQUIRED_METRICS, SWORD_PRESETS
 from ui_params import (
@@ -263,104 +276,213 @@ if generation_category == "Sword":
     download_name = f"{sword_type}.scad"
 elif generation_category == "Scabbard":
     st.subheader("Scabbard")
-    st.caption("Scabbards currently support only Symmetrical Tapered and Leaf straight blade profiles.")
+    st.caption("Fitted scabbards derive their cavity and shell from the selected blade geometry.")
+    scabbard_mode = st.radio(
+        "Scabbard mode",
+        ("Blade-derived scabbard", "Experimental STL-derived scabbard"),
+        horizontal=True,
+        key="scabbard_mode",
+    )
     sword_type = st.selectbox("Source sword preset", list(SWORD_PRESETS), key="scabbard_sword_type")
     preset = SWORD_PRESETS[sword_type]
-    blade_label = st.selectbox("Blade type", ("Symmetrical Tapered", "Leaf"), key="scabbard_blade_type")
-    blade_style = "tapered" if blade_label == "Symmetrical Tapered" else "leaf"
+    if scabbard_mode == "Blade-derived scabbard":
+        blade_label = st.selectbox(
+            "Blade geometry",
+            ("Symmetrical Tapered", "Leaf", "Curved", "Falchion"),
+            key="scabbard_blade_type",
+            help="This selects the blade profile the fitted scabbard follows; it is not a separate scabbard preset.",
+        )
+        blade_style = {
+            "Symmetrical Tapered": "tapered",
+            "Leaf": "leaf",
+            "Curved": "curved",
+            "Falchion": "falchion",
+        }[blade_label]
 
-    st.subheader("Inherited blade dimensions")
-    scabbard_metric_columns = st.columns(3)
-    scabbard_metrics = {}
-    for index, name in enumerate(("blade_length_mm", "blade_base_width_mm", "blade_tip_width_mm", "blade_thickness_mm", "ricasso_length_mm")):
-        spec = preset[name]
-        with scabbard_metric_columns[index % 3]:
-            scabbard_metrics[name] = st.number_input(
-                name.replace("_mm", "").replace("_", " ").title() + " (mm)",
-                min_value=0.0 if name == "ricasso_length_mm" else 0.1,
-                value=float(spec["default"]),
-                step=1.0 if name != "blade_thickness_mm" else 0.1,
-                key=f"scabbard_{sword_type}_{name}",
-                help=f"Inherited from the corresponding sword configuration. Typical range: {spec['min']:g}-{spec['max']:g} mm",
+        st.subheader("Inherited blade dimensions")
+        st.info("Compatibility: Symmetrical Tapered, Leaf, Curved, and Falchion are supported by fitted blade-envelope geometry.")
+        scabbard_metric_columns = st.columns(3)
+        scabbard_metrics = {}
+        for index, name in enumerate(("blade_length_mm", "blade_base_width_mm", "blade_tip_width_mm", "blade_thickness_mm", "ricasso_length_mm")):
+            spec = preset[name]
+            with scabbard_metric_columns[index % 3]:
+                scabbard_metrics[name] = st.number_input(
+                    name.replace("_mm", "").replace("_", " ").title() + " (mm)",
+                    min_value=0.0 if name == "ricasso_length_mm" else 0.1,
+                    value=float(spec["default"]),
+                    step=1.0 if name != "blade_thickness_mm" else 0.1,
+                    key=f"scabbard_{sword_type}_{name}",
+                    help=f"Inherited from the corresponding sword configuration. Typical range: {spec['min']:g}-{spec['max']:g} mm",
+                )
+
+        st.subheader("Fit and construction")
+        fit_col1, fit_col2, fit_col3 = st.columns(3)
+        with fit_col1:
+            fit_mode = st.selectbox("Exterior mode", SCABBARD_FIT_MODES, key="scabbard_fit_mode")
+            clearance_per_side_mm = st.number_input(
+                "Clearance per side (mm)",
+                min_value=0.0,
+                max_value=float(MAX_SCABBARD_CLEARANCE_MM * 2),
+                value=float(DEFAULT_SCABBARD_CLEARANCE_MM),
+                step=0.05,
+                help="Applied around blade width and thickness. Values outside the safe range are clamped.",
             )
+        with fit_col2:
+            wall_thickness_mm = st.number_input(
+                "Wall thickness (mm)",
+                min_value=0.1,
+                max_value=float(MAX_SCABBARD_WALL_THICKNESS_MM * 2),
+                value=float(DEFAULT_SCABBARD_WALL_THICKNESS_MM),
+                step=0.1,
+                help="Minimum material from cavity to exterior sides/faces.",
+            )
+            seam_allowance_mm = st.number_input(
+                "Seam allowance (mm)",
+                min_value=0.0,
+                max_value=1.5,
+                value=float(DEFAULT_SCABBARD_SEAM_ALLOWANCE_MM),
+                step=0.05,
+                help="Small offset for split-print cuts to avoid coplanar zero-thickness seams.",
+            )
+        with fit_col3:
+            split_mode = st.selectbox("Print split", SCABBARD_SPLIT_MODES[:-1], key="scabbard_split_mode")
+            throat_enabled = st.checkbox("Throat collar", value=True)
+            end_cap_enabled = st.checkbox("End cap", value=True)
 
-    st.subheader("Fit and shell")
-    fit_col1, fit_col2, fit_col3 = st.columns(3)
-    with fit_col1:
-        clearance_per_side_mm = st.number_input(
-            "Clearance per side (mm)",
-            min_value=0.0,
-            max_value=float(MAX_SCABBARD_CLEARANCE_MM * 2),
-            value=float(DEFAULT_SCABBARD_CLEARANCE_MM),
-            step=0.05,
-            help="Applied around blade width and thickness. Values outside the safe range are clamped.",
-        )
-    with fit_col2:
-        wall_thickness_mm = st.number_input(
-            "Wall thickness (mm)",
-            min_value=0.1,
-            max_value=float(MAX_SCABBARD_WALL_THICKNESS_MM * 2),
-            value=float(DEFAULT_SCABBARD_WALL_THICKNESS_MM),
-            step=0.1,
-            help="Minimum material from cavity to exterior sides/faces.",
-        )
-    with fit_col3:
-        split_mode = st.selectbox("Split mode", SCABBARD_SPLIT_MODES)
-        throat_enabled = st.checkbox("Throat collar", value=True)
-        end_cap_enabled = st.checkbox("End cap", value=True)
+        try:
+            scabbard_params, scabbard_warnings = build_scabbard_generation_params(
+                blade_style,
+                scabbard_metrics,
+                clearance_per_side_mm,
+                wall_thickness_mm,
+                split_mode,
+                throat_enabled,
+                end_cap_enabled,
+                fit_mode,
+                seam_allowance_mm,
+            )
+            can_export = True
+        except ValueError as exc:
+            scabbard_params = {}
+            scabbard_warnings = [str(exc)]
+            can_export = False
 
-    try:
-        scabbard_params, scabbard_warnings = build_scabbard_generation_params(
-            blade_style,
+        st.subheader("Geometry audit")
+        scabbard_audit = audit_scabbard_geometry(
             scabbard_metrics,
+            blade_style,
             clearance_per_side_mm,
             wall_thickness_mm,
             split_mode,
             throat_enabled,
             end_cap_enabled,
+            fit_mode,
+            seam_allowance_mm,
         )
-        can_export = True
-    except ValueError as exc:
-        scabbard_params = {}
-        scabbard_warnings = [str(exc)]
-        can_export = False
+        audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
+        with audit_warning_col:
+            st.markdown("**Warnings**")
+            warnings = scabbard_warnings + scabbard_audit["warnings"]
+            if warnings:
+                for message in dict.fromkeys(warnings):
+                    st.warning(message)
+            else:
+                st.success("No scabbard geometry warnings.")
+        with audit_info_col:
+            st.markdown("**Notes**")
+            st.info(f"Safe clearance range: {MIN_SCABBARD_CLEARANCE_MM:g}-{MAX_SCABBARD_CLEARANCE_MM:g} mm per side.")
+            st.info(f"Safe wall thickness minimum: {MIN_SCABBARD_WALL_THICKNESS_MM:g} mm.")
+            for message in scabbard_audit["info"]:
+                st.info(message)
+        with audit_pass_col:
+            st.markdown("**Checks passed**")
+            for message in scabbard_audit["passes"]:
+                st.success(message)
 
-    st.subheader("Geometry audit")
-    scabbard_audit = audit_scabbard_geometry(
-        scabbard_metrics,
-        blade_style,
-        clearance_per_side_mm,
-        wall_thickness_mm,
-        split_mode,
-        throat_enabled,
-        end_cap_enabled,
-    )
-    audit_warning_col, audit_info_col, audit_pass_col = st.columns(3)
-    with audit_warning_col:
-        st.markdown("**Warnings**")
-        warnings = scabbard_warnings + scabbard_audit["warnings"]
-        if warnings:
+        scad = generate_scabbard_scad(**scabbard_params) if scabbard_params else "// Unsupported scabbard configuration."
+        download_name = f"{sword_type}_{blade_style}_scabbard.scad"
+    else:
+        st.subheader("Custom STL Scabbard")
+        st.warning("Experimental blade-only STL workflow. Use a watertight, manifold blade mesh aligned to the project axis.")
+        st.caption(
+            "Final STL export contains only the hollow scabbard. The uploaded blade is used to create the cavity "
+            "and appears only in diagnostic previews."
+        )
+        uploaded_stl = st.file_uploader(
+            "Upload blade STL",
+            type=["stl"],
+            key="custom_scabbard_stl",
+            help=f"Only .stl files up to {MAX_CUSTOM_STL_UPLOAD_BYTES // (1024 * 1024)} MB are accepted.",
+        )
+        saved_stl_path = None
+        stl_save_warnings = []
+        if uploaded_stl is not None:
+            saved_stl_path, stl_save_warnings = save_uploaded_stl(uploaded_stl)
+            if saved_stl_path:
+                st.success(f"Saved controlled STL import: {saved_stl_path.name}")
+
+        stl_col1, stl_col2, stl_col3 = st.columns(3)
+        with stl_col1:
+            stl_scale = st.number_input("Scale", min_value=0.05, max_value=20.0, value=1.0, step=0.05)
+            stl_clearance = st.number_input("Cavity clearance (mm)", min_value=0.0, max_value=6.0, value=float(DEFAULT_SCABBARD_CLEARANCE_MM), step=0.05)
+            stl_wall = st.number_input("Shell wall thickness (mm)", min_value=0.1, max_value=24.0, value=float(DEFAULT_SCABBARD_WALL_THICKNESS_MM), step=0.1)
+        with stl_col2:
+            stl_rx = st.number_input("Rotate X (deg)", value=0.0, step=5.0)
+            stl_ry = st.number_input("Rotate Y (deg)", value=0.0, step=5.0)
+            stl_rz = st.number_input("Rotate Z (deg)", value=0.0, step=5.0)
+        with stl_col3:
+            stl_split = st.selectbox("Print split", SCABBARD_SPLIT_MODES[:-1], key="custom_stl_split")
+            stl_seam = st.number_input("Seam allowance (mm)", min_value=0.0, max_value=1.5, value=float(DEFAULT_SCABBARD_SEAM_ALLOWANCE_MM), step=0.05, key="custom_stl_seam")
+            stl_throat = st.number_input("Throat opening length (mm)", min_value=1.0, max_value=80.0, value=float(DEFAULT_THROAT_LENGTH_MM), step=1.0, key="custom_stl_throat")
+            stl_preview_mode = st.selectbox("Preview mode", CUSTOM_STL_PREVIEW_MODES, key="custom_stl_preview_mode")
+
+        if saved_stl_path:
+            custom_stl_generation_params = {
+                "stl_path": saved_stl_path,
+                "object_type": "Blade only",
+                "rotate_x_deg": stl_rx,
+                "rotate_y_deg": stl_ry,
+                "rotate_z_deg": stl_rz,
+                "scale": stl_scale,
+                "clearance_mm": stl_clearance,
+                "wall_thickness_mm": stl_wall,
+                "throat_length_mm": stl_throat,
+                "split_mode": stl_split,
+                "seam_allowance_mm": stl_seam,
+            }
+            scad, custom_warnings = generate_custom_stl_scabbard_scad(
+                **custom_stl_generation_params,
+                preview_mode=stl_preview_mode,
+            )
+            custom_stl_export_scad, custom_export_warnings = generate_custom_stl_scabbard_scad(
+                **custom_stl_generation_params,
+                preview_mode="Scabbard Only",
+            )
+            custom_warnings.extend(custom_export_warnings)
+            scabbard_audit = audit_custom_stl_scabbard_geometry(
+                str(saved_stl_path), "Blade only", stl_rx, stl_ry, stl_rz, stl_scale, stl_clearance, stl_wall,
+                throat_length_mm=stl_throat, split_mode=stl_split, seam_allowance_mm=stl_seam,
+            )
+            warnings = stl_save_warnings + custom_warnings + scabbard_audit["warnings"]
             for message in dict.fromkeys(warnings):
                 st.warning(message)
+            for message in scabbard_audit["info"]:
+                st.info(message)
+            for message in scabbard_audit["passes"]:
+                st.success(message)
+            blocking_warning = any(
+                phrase in message.lower()
+                for message in warnings
+                for phrase in ("missing", "could not", "outside the controlled", "accept only")
+            )
+            can_export = not blocking_warning
         else:
-            st.success("No scabbard geometry warnings.")
-    with audit_info_col:
-        st.markdown("**Notes**")
-        st.info(
-            f"Safe clearance range: {MIN_SCABBARD_CLEARANCE_MM:g}-{MAX_SCABBARD_CLEARANCE_MM:g} mm per side."
-        )
-        st.info(
-            f"Safe wall thickness minimum: {MIN_SCABBARD_WALL_THICKNESS_MM:g} mm."
-        )
-        for message in scabbard_audit["info"]:
-            st.info(message)
-    with audit_pass_col:
-        st.markdown("**Checks passed**")
-        for message in scabbard_audit["passes"]:
-            st.success(message)
-
-    scad = generate_scabbard_scad(**scabbard_params) if scabbard_params else "// Unsupported scabbard configuration."
-    download_name = f"{sword_type}_{blade_style}_scabbard.scad"
+            scad = "// Upload a blade-only STL to generate an experimental STL-derived scabbard."
+            custom_stl_export_scad = scad
+            for message in stl_save_warnings:
+                st.warning(message)
+            can_export = False
+        download_name = f"{sword_type}_custom_stl_scabbard.scad"
 else:
     st.subheader("Armor")
     armor_type = st.selectbox("Armor type", ARMOR_TYPES)
@@ -676,6 +798,12 @@ def scad_for_render_quality(render_quality: str) -> str:
             debug_geometry=debug_geometry,
             render_quality=render_quality,
         )
+    if (
+        generation_category == "Scabbard"
+        and scabbard_mode == "Experimental STL-derived scabbard"
+        and render_quality == "final"
+    ):
+        return custom_stl_export_scad
     return scad
 
 
@@ -746,11 +874,34 @@ if generation_category == "Armor" and armor_type == "Bracer":
         for view_name, result in preview_set.failures.items():
             st.error(f"{view_name}: {result.message}")
 
+if generation_category == "Scabbard":
+    if st.button("Generate Scabbard Preview Set", disabled=not can_export):
+        preview_set = export_preview_set(
+            scad_for_render_quality("preview_set"),
+            openscad_path,
+            presets=SCABBARD_CAMERA_PRESETS,
+            label="scabbard",
+        )
+        if preview_set.success:
+            st.success(preview_set.message)
+        elif preview_set.successful_paths:
+            st.warning(preview_set.message)
+        else:
+            st.error(preview_set.message)
+        successful_paths = preview_set.successful_paths
+        if successful_paths:
+            cols = st.columns(2)
+            for index, (view_name, image_path) in enumerate(successful_paths.items()):
+                with cols[index % 2]:
+                    st.image(str(image_path), caption=view_name.replace("_", " ").title())
+        for view_name, result in preview_set.failures.items():
+            st.error(f"{view_name}: {result.message}")
+
 with st.expander("Known limitations"):
     st.markdown(
         """
 - PNG and STL generation require a local OpenSCAD installation.
-- Single command-line previews use OpenSCAD's default camera; Bracer preview sets use named camera presets.
+- Single command-line previews use OpenSCAD's default camera; Bracer and scabbard preview sets use named camera presets.
 - Geometry is simplified, decorative, and not intended for fabrication decisions.
 - Debug markers are included in exported geometry only while Debug geometry is enabled.
 """
