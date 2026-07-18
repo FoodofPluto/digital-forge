@@ -15,6 +15,7 @@ from geometry_audit import (
     audit_pauldron_geometry,
     audit_scabbard_geometry,
 )
+from futurewear.ui import render_futurewear_designer
 from preview_service import SCABBARD_CAMERA_PRESETS, export_preview_set, export_with_openscad
 from realism_rules import check_realism
 from scad_generator import (
@@ -483,7 +484,7 @@ elif generation_category == "Scabbard":
                 st.warning(message)
             can_export = False
         download_name = f"{sword_type}_custom_stl_scabbard.scad"
-else:
+elif generation_category == "Armor":
     st.subheader("Armor")
     armor_type = st.selectbox("Armor type", ARMOR_TYPES)
 
@@ -789,6 +790,11 @@ else:
 
     scad = generate_armor_scad(**armor_params, debug_geometry=debug_geometry, render_quality="preview")
     download_name = f"{armor_type.lower()}.scad"
+else:
+    futurewear_result = render_futurewear_designer(debug_geometry=debug_geometry)
+    scad = futurewear_result.scad
+    download_name = futurewear_result.download_name
+    can_export = futurewear_result.can_export
 
 
 def scad_for_render_quality(render_quality: str) -> str:
@@ -893,6 +899,29 @@ if generation_category == "Scabbard":
             cols = st.columns(2)
             for index, (view_name, image_path) in enumerate(successful_paths.items()):
                 with cols[index % 2]:
+                    st.image(str(image_path), caption=view_name.replace("_", " ").title())
+        for view_name, result in preview_set.failures.items():
+            st.error(f"{view_name}: {result.message}")
+
+if generation_category == "Futurewear":
+    if st.button("Generate Futurewear Preview Set", disabled=not can_export):
+        preview_set = export_preview_set(
+            scad_for_render_quality("preview_set"),
+            openscad_path,
+            presets=futurewear_result.preview_presets,
+            label=futurewear_result.preview_label,
+        )
+        if preview_set.success:
+            st.success(preview_set.message)
+        elif preview_set.successful_paths:
+            st.warning(preview_set.message)
+        else:
+            st.error(preview_set.message)
+        successful_paths = preview_set.successful_paths
+        if successful_paths:
+            cols = st.columns(3)
+            for index, (view_name, image_path) in enumerate(successful_paths.items()):
+                with cols[index % 3]:
                     st.image(str(image_path), caption=view_name.replace("_", " ").title())
         for view_name, result in preview_set.failures.items():
             st.error(f"{view_name}: {result.message}")

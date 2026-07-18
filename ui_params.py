@@ -21,7 +21,7 @@ from scabbard_generator import (
     normalize_scabbard_parameters,
 )
 
-GENERATION_CATEGORIES = ("Sword", "Scabbard", "Armor")
+GENERATION_CATEGORIES = ("Sword", "Scabbard", "Armor", "Futurewear")
 DEFAULT_GENERATION_CATEGORY = "Sword"
 
 
